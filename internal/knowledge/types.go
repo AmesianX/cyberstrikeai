@@ -5,6 +5,14 @@ import (
 	"time"
 )
 
+// formatTime 格式化时间为 RFC3339 格式，零时间返回空字符串
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
+}
+
 // KnowledgeItem 知识库项
 type KnowledgeItem struct {
 	ID        string    `json:"id"`
@@ -22,12 +30,12 @@ type KnowledgeItemSummary struct {
 	Category  string    `json:"category"`
 	Title     string    `json:"title"`
 	FilePath  string    `json:"filePath"`
-	Content   string    `json:"content,omitempty"` // 可选：内容预览（如果提供，通常只包含前150字符）
+	Content   string    `json:"content,omitempty"` // 可选：内容预览（如果提供，通常只包含前 150 字符）
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// MarshalJSON 自定义JSON序列化，确保时间格式正确
+// MarshalJSON 自定义 JSON 序列化，确保时间格式正确
 func (k *KnowledgeItemSummary) MarshalJSON() ([]byte, error) {
 	type Alias KnowledgeItemSummary
 	aux := &struct {
@@ -37,25 +45,12 @@ func (k *KnowledgeItemSummary) MarshalJSON() ([]byte, error) {
 	}{
 		Alias: (*Alias)(k),
 	}
-
-	// 格式化创建时间
-	if k.CreatedAt.IsZero() {
-		aux.CreatedAt = ""
-	} else {
-		aux.CreatedAt = k.CreatedAt.Format(time.RFC3339)
-	}
-
-	// 格式化更新时间
-	if k.UpdatedAt.IsZero() {
-		aux.UpdatedAt = ""
-	} else {
-		aux.UpdatedAt = k.UpdatedAt.Format(time.RFC3339)
-	}
-
+	aux.CreatedAt = formatTime(k.CreatedAt)
+	aux.UpdatedAt = formatTime(k.UpdatedAt)
 	return json.Marshal(aux)
 }
 
-// MarshalJSON 自定义JSON序列化，确保时间格式正确
+// MarshalJSON 自定义 JSON 序列化，确保时间格式正确
 func (k *KnowledgeItem) MarshalJSON() ([]byte, error) {
 	type Alias KnowledgeItem
 	aux := &struct {
@@ -65,21 +60,8 @@ func (k *KnowledgeItem) MarshalJSON() ([]byte, error) {
 	}{
 		Alias: (*Alias)(k),
 	}
-
-	// 格式化创建时间
-	if k.CreatedAt.IsZero() {
-		aux.CreatedAt = ""
-	} else {
-		aux.CreatedAt = k.CreatedAt.Format(time.RFC3339)
-	}
-
-	// 格式化更新时间
-	if k.UpdatedAt.IsZero() {
-		aux.UpdatedAt = ""
-	} else {
-		aux.UpdatedAt = k.UpdatedAt.Format(time.RFC3339)
-	}
-
+	aux.CreatedAt = formatTime(k.CreatedAt)
+	aux.UpdatedAt = formatTime(k.UpdatedAt)
 	return json.Marshal(aux)
 }
 
@@ -89,7 +71,7 @@ type KnowledgeChunk struct {
 	ItemID     string    `json:"itemId"`
 	ChunkIndex int       `json:"chunkIndex"`
 	ChunkText  string    `json:"chunkText"`
-	Embedding  []float32 `json:"-"` // 向量嵌入，不序列化到JSON
+	Embedding  []float32 `json:"-"` // 向量嵌入，不序列化到 JSON
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
@@ -108,11 +90,11 @@ type RetrievalLog struct {
 	MessageID      string    `json:"messageId,omitempty"`
 	Query          string    `json:"query"`
 	RiskType       string    `json:"riskType,omitempty"`
-	RetrievedItems []string  `json:"retrievedItems"` // 检索到的知识项ID列表
+	RetrievedItems []string  `json:"retrievedItems"` // 检索到的知识项 ID 列表
 	CreatedAt      time.Time `json:"createdAt"`
 }
 
-// MarshalJSON 自定义JSON序列化，确保时间格式正确
+// MarshalJSON 自定义 JSON 序列化，确保时间格式正确
 func (r *RetrievalLog) MarshalJSON() ([]byte, error) {
 	type Alias RetrievalLog
 	return json.Marshal(&struct {
@@ -120,21 +102,21 @@ func (r *RetrievalLog) MarshalJSON() ([]byte, error) {
 		CreatedAt string `json:"createdAt"`
 	}{
 		Alias:     (*Alias)(r),
-		CreatedAt: r.CreatedAt.Format(time.RFC3339),
+		CreatedAt: formatTime(r.CreatedAt),
 	})
 }
 
 // CategoryWithItems 分类及其下的知识项（用于按分类分页）
 type CategoryWithItems struct {
-	Category string                `json:"category"`           // 分类名称
-	ItemCount int                  `json:"itemCount"`          // 该分类下的知识项总数
-	Items     []*KnowledgeItemSummary `json:"items"`          // 该分类下的知识项列表
+	Category  string                `json:"category"`           // 分类名称
+	ItemCount int                   `json:"itemCount"`          // 该分类下的知识项总数
+	Items     []*KnowledgeItemSummary `json:"items"`            // 该分类下的知识项列表
 }
 
 // SearchRequest 搜索请求
 type SearchRequest struct {
 	Query     string  `json:"query"`
 	RiskType  string  `json:"riskType,omitempty"`  // 可选：指定风险类型
-	TopK      int     `json:"topK,omitempty"`      // 返回Top-K结果，默认5
-	Threshold float64 `json:"threshold,omitempty"` // 相似度阈值，默认0.7
+	TopK      int     `json:"topK,omitempty"`      // 返回 Top-K 结果，默认 5
+	Threshold float64 `json:"threshold,omitempty"` // 相似度阈值，默认 0.7
 }

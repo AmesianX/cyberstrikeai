@@ -544,9 +544,21 @@ func (idx *Indexer) IndexItem(ctx context.Context, itemID string) error {
 				idx.mu.Unlock()
 			}
 
-			// 如果连续失败 2 个块，立即停止处理该知识项（降低阈值，更快停止）
+			// 如果连续失败 5 个块，立即停止处理该知识项
 			// 这样可以避免继续浪费 API 调用，同时也能更快地检测到配置问题
-			if itemErrorCount >= 2 {
+			// 对于大文档（超过 10 个块），允许失败比例不超过 50%
+			maxConsecutiveFailures := 5
+			if len(chunks) > 10 && itemErrorCount > len(chunks)/2 {
+				idx.logger.Error("知识项向量化失败比例过高，停止处理",
+					zap.String("itemId", itemID),
+					zap.Int("totalChunks", len(chunks)),
+					zap.Int("failedChunks", itemErrorCount),
+					zap.Int("firstErrorChunkIndex", firstErrorChunkIndex),
+					zap.Error(firstError),
+				)
+				return fmt.Errorf("知识项向量化失败比例过高 (%d/%d个块失败): %v", itemErrorCount, len(chunks), firstError)
+			}
+			if itemErrorCount >= maxConsecutiveFailures {
 				idx.logger.Error("知识项连续向量化失败，停止处理",
 					zap.String("itemId", itemID),
 					zap.Int("totalChunks", len(chunks)),
@@ -649,7 +661,7 @@ func (idx *Indexer) RebuildIndex(ctx context.Context) error {
 
 	failedCount := 0
 	consecutiveFailures := 0
-	maxConsecutiveFailures := 2 // 连续失败 2 次后立即停止（降低阈值，更快停止）
+	maxConsecutiveFailures := 5 // 连续失败 5 次后立即停止（允许偶尔的临时错误）
 	firstFailureItemID := ""
 	var firstFailureError error
 

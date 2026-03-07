@@ -657,7 +657,7 @@ func (m *Manager) UpdateItem(id, category, title, content string) (*KnowledgeIte
 
 		// 删除旧目录（如果为空）
 		oldDir := filepath.Dir(item.FilePath)
-		if entries, err := os.ReadDir(oldDir); err == nil && len(entries) == 0 {
+		if isEmpty, _ := isEmptyDir(oldDir); isEmpty {
 			// 只有当目录不是知识库根目录时才删除（避免删除根目录）
 			if oldDir != m.basePath {
 				if err := os.Remove(oldDir); err != nil {
@@ -712,7 +712,7 @@ func (m *Manager) DeleteItem(id string) error {
 
 	// 删除空目录（如果为空）
 	dir := filepath.Dir(filePath)
-	if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
+	if isEmpty, _ := isEmptyDir(dir); isEmpty {
 		// 只有当目录不是知识库根目录时才删除（避免删除根目录）
 		if dir != m.basePath {
 			if err := os.Remove(dir); err != nil {
@@ -722,6 +722,21 @@ func (m *Manager) DeleteItem(id string) error {
 	}
 
 	return nil
+}
+
+// isEmptyDir 检查目录是否为空（忽略隐藏文件和 . 开头的文件）
+func isEmptyDir(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		// 忽略隐藏文件（以 . 开头）
+		if !strings.HasPrefix(entry.Name(), ".") {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // LogRetrieval 记录检索日志

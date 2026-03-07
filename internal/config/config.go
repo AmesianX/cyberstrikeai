@@ -582,8 +582,17 @@ func Default() *Config {
 			},
 			Retrieval: RetrievalConfig{
 				TopK:                5,
-				SimilarityThreshold: 0.7,
+				SimilarityThreshold: 0.65, // 降低阈值到 0.65，减少漏检
 				HybridWeight:        0.7,
+			},
+			Indexing: IndexingConfig{
+				ChunkSize:        768,   // 增加到 768，更好的上下文保持
+				ChunkOverlap:     50,
+				MaxChunksPerItem: 20,    // 限制单个知识项最多 20 个块，避免消耗过多配额
+				MaxRPM:           100,   // 默认 100 RPM，避免 429 错误
+				RateLimitDelayMs: 600,   // 600ms 间隔，对应 100 RPM
+				MaxRetries:       3,
+				RetryDelayMs:     1000,
 			},
 		},
 	}

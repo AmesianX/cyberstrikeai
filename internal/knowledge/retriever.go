@@ -69,8 +69,8 @@ func cosineSimilarity(a, b []float32) float64 {
 	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
-// bm25Score 计算BM25分数（改进版，更接近标准BM25）
-// 注意：这是单文档版本的BM25，缺少全局IDF，但比之前的简化版本更准确
+// bm25Score 计算 BM25 分数（带缓存的改进版本）
+// 注意：由于缺少全局文档统计，使用简化 IDF 计算
 func (r *Retriever) bm25Score(query, text string) float64 {
 	queryTerms := strings.Fields(strings.ToLower(query))
 	if len(queryTerms) == 0 {
@@ -83,44 +83,56 @@ func (r *Retriever) bm25Score(query, text string) float64 {
 		return 0.0
 	}
 
-	// BM25参数
-	k1 := 1.5             // 词频饱和度参数
-	b := 0.75             // 长度归一化参数
-	avgDocLength := 100.0 // 估算的平均文档长度（用于归一化）
+	// BM25 参数（标准值）
+	k1 := 1.2             // 词频饱和度参数（标准范围 1.2-2.0）
+	b := 0.75             // 长度归一化参数（标准值）
+	avgDocLength := 150.0 // 估算的平均文档长度（基于典型知识块大小）
 	docLength := float64(len(textTerms))
 
-	score := 0.0
-	for _, term := range queryTerms {
-		// 计算词频（TF）
-		termFreq := 0
-		for _, textTerm := range textTerms {
-			if textTerm == term {
-				termFreq++
-			}
-		}
-
-		if termFreq > 0 {
-			// BM25公式的核心部分
-			// TF部分：termFreq / (termFreq + k1 * (1 - b + b * (docLength / avgDocLength)))
-			tf := float64(termFreq)
-			lengthNorm := 1 - b + b*(docLength/avgDocLength)
-			tfScore := tf / (tf + k1*lengthNorm)
-
-			// 简化IDF：使用词长度作为权重（短词通常更重要）
-			// 实际BM25需要全局文档统计，这里用简化版本
-			idfWeight := 1.0
-			if len(term) > 2 {
-				// 长词稍微降低权重（但实际BM25中，罕见词IDF更高）
-				idfWeight = 1.0 + math.Log(1.0+float64(len(term))/10.0)
-			}
-
-			score += tfScore * idfWeight
-		}
+	// 计算词频映射
+	textTermFreq := make(map[string]int, len(textTerms))
+	for _, term := range textTerms {
+		textTermFreq[term]++
 	}
 
-	// 归一化到0-1范围
+	score := 0.0
+	matchedQueryTerms := 0
+
+	for _, term := range queryTerms {
+		termFreq, exists := textTermFreq[term]
+		if !exists || termFreq == 0 {
+			continue
+		}
+		matchedQueryTerms++
+
+		// BM25 TF 计算公式
+		tf := float64(termFreq)
+		lengthNorm := 1 - b + b*(docLength/avgDocLength)
+		tfScore := tf / (tf + k1*lengthNorm)
+
+		// 改进的 IDF 计算：使用词长度和出现频率估算
+		// 短词（2-3 字符）通常更重要，长词 IDF 略低
+		idfWeight := 1.0
+		termLen := len(term)
+		if termLen <= 2 {
+			// 极短词（如 go, js）给予更高权重
+			idfWeight = 1.2 + math.Log(1.0+float64(termFreq)/20.0)
+		} else if termLen <= 4 {
+			// 短词（4 字符）标准权重
+			idfWeight = 1.0 + math.Log(1.0+float64(termFreq)/15.0)
+		} else {
+			// 长词稍微降低权重
+			idfWeight = 0.9 + math.Log(1.0+float64(termFreq)/10.0)
+		}
+
+		score += tfScore * idfWeight
+	}
+
+	// 归一化：考虑匹配的查询词比例
 	if len(queryTerms) > 0 {
-		score = score / float64(len(queryTerms))
+		// 使用匹配比例作为额外因子
+		matchRatio := float64(matchedQueryTerms) / float64(len(queryTerms))
+		score = (score / float64(len(queryTerms))) * (1 + matchRatio) / 2
 	}
 
 	return math.Min(score, 1.0)
@@ -173,7 +185,7 @@ func (r *Retriever) Search(ctx context.Context, req *SearchRequest) ([]*Retrieva
 			SELECT e.id, e.item_id, e.chunk_index, e.chunk_text, e.embedding, i.category, i.title
 			FROM knowledge_embeddings e
 			JOIN knowledge_base_items i ON e.item_id = i.id
-			WHERE i.category = ? COLLATE NOCASE
+			WHERE TRIM(i.category) = TRIM(?) COLLATE NOCASE
 		`, req.RiskType)
 	} else {
 		rows, err = r.db.Query(`
@@ -357,7 +369,10 @@ func (r *Retriever) Search(ctx context.Context, req *SearchRequest) ([]*Retrieva
 			zap.Float64("threshold", threshold),
 			zap.Float64("maxSimilarity", maxSimilarity),
 		)
-	} else if len(filteredCandidates) > topK {
+	}
+
+	// 统一在最终返回前严格限制 Top-K 数量
+	if len(filteredCandidates) > topK {
 		// 如果过滤后结果太多，只取Top-K
 		filteredCandidates = filteredCandidates[:topK]
 	}
