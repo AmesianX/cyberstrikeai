@@ -953,7 +953,7 @@ function initializeChatUI() {
     const messagesDiv = document.getElementById('chat-messages');
     if (messagesDiv && messagesDiv.childElementCount === 0) {
         const readyMsg = typeof window.t === 'function' ? window.t('chat.systemReadyMessage') : '系统已就绪。请输入您的测试需求，系统将自动执行相应的安全测试。';
-        addMessage('assistant', readyMsg);
+        addMessage('assistant', readyMsg, null, null, null, { systemReadyMessage: true });
     }
 
     addAttackChainButton(currentConversationId);
@@ -989,8 +989,60 @@ function wrapTablesInBubble(bubble) {
     });
 }
 
-// 添加消息
-function addMessage(role, content, mcpExecutionIds = null, progressId = null, createdAt = null) {
+/**
+ * 将「系统已就绪」类文案按当前语言重新渲染进气泡（与 addMessage 助手分支一致的安全处理）
+ */
+function refreshSystemReadyMessageBubbles() {
+    if (typeof window.t !== 'function') return;
+    const text = window.t('chat.systemReadyMessage');
+    const escapeHtmlLocal = (s) => {
+        if (!s) return '';
+        const div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+    };
+    const defaultSanitizeConfig = {
+        ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 's', 'code', 'pre', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr'],
+        ALLOWED_ATTR: ['href', 'title', 'alt', 'src', 'class'],
+        ALLOW_DATA_ATTR: false,
+    };
+    let formattedContent;
+    if (typeof marked !== 'undefined') {
+        try {
+            marked.setOptions({ breaks: true, gfm: true });
+            const parsed = marked.parse(text);
+            formattedContent = typeof DOMPurify !== 'undefined'
+                ? DOMPurify.sanitize(parsed, defaultSanitizeConfig)
+                : parsed;
+        } catch (e) {
+            formattedContent = escapeHtmlLocal(text).replace(/\n/g, '<br>');
+        }
+    } else {
+        formattedContent = escapeHtmlLocal(text).replace(/\n/g, '<br>');
+    }
+
+    document.querySelectorAll('.message.assistant[data-system-ready-message]').forEach(function (messageDiv) {
+        const bubble = messageDiv.querySelector('.message-bubble');
+        if (!bubble) return;
+        const copyBtn = bubble.querySelector('.message-copy-btn');
+        if (copyBtn) copyBtn.remove();
+        bubble.innerHTML = formattedContent;
+        if (typeof wrapTablesInBubble === 'function') wrapTablesInBubble(bubble);
+        messageDiv.dataset.originalContent = text;
+        const copyBtnNew = document.createElement('button');
+        copyBtnNew.className = 'message-copy-btn';
+        copyBtnNew.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span>' + window.t('common.copy') + '</span>';
+        copyBtnNew.title = window.t('chat.copyMessageTitle');
+        copyBtnNew.onclick = function (e) {
+            e.stopPropagation();
+            copyMessageToClipboard(messageDiv, this);
+        };
+        bubble.appendChild(copyBtnNew);
+    });
+}
+
+// 添加消息（options.systemReadyMessage 为 true 时，语言切换会刷新该条文案）
+function addMessage(role, content, mcpExecutionIds = null, progressId = null, createdAt = null, options = null) {
     const messagesDiv = document.getElementById('chat-messages');
     const messageDiv = document.createElement('div');
     messageCounter++;
@@ -1189,7 +1241,9 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
         messageTime = new Date();
     }
     const msgTimeLocale = (typeof window.__locale === 'string' && window.__locale.startsWith('zh')) ? 'zh-CN' : 'en-US';
-    timeDiv.textContent = messageTime.toLocaleTimeString(msgTimeLocale, { hour: '2-digit', minute: '2-digit' });
+    const msgTimeOpts = { hour: '2-digit', minute: '2-digit' };
+    if (msgTimeLocale === 'zh-CN') msgTimeOpts.hour12 = false;
+    timeDiv.textContent = messageTime.toLocaleTimeString(msgTimeLocale, msgTimeOpts);
     contentWrapper.appendChild(timeDiv);
     
     // 如果有MCP执行ID或进度ID，添加查看详情区域（统一使用"渗透测试详情"样式）
@@ -1234,6 +1288,10 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
     }
     
     messageDiv.appendChild(contentWrapper);
+    // 标记「系统就绪」占位消息，便于切换语言后刷新文案
+    if (options && options.systemReadyMessage) {
+        messageDiv.setAttribute('data-system-ready-message', '1');
+    }
     messagesDiv.appendChild(messageDiv);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     return id;
@@ -1712,7 +1770,7 @@ async function startNewConversation() {
     currentConversationGroupId = null; // 新对话不属于任何分组
     document.getElementById('chat-messages').innerHTML = '';
     const readyMsgNew = typeof window.t === 'function' ? window.t('chat.systemReadyMessage') : '系统已就绪。请输入您的测试需求，系统将自动执行相应的安全测试。';
-    addMessage('assistant', readyMsgNew);
+    addMessage('assistant', readyMsgNew, null, null, null, { systemReadyMessage: true });
     addAttackChainButton(null);
     updateActiveConversation();
     // 刷新分组列表，清除分组高亮
@@ -1957,33 +2015,24 @@ function formatConversationTimestamp(dateObj, todayStart, yesterdayStart) {
     const fmtLocale = (typeof window.__locale === 'string' && window.__locale.startsWith('zh')) ? 'zh-CN' : 'en-US';
     const yesterdayLabel = typeof window.t === 'function' ? window.t('chat.yesterday') : '昨天';
 
+    const timeOnlyOpts = { hour: '2-digit', minute: '2-digit' };
+    const dateTimeOpts = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+    const fullDateOpts = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+    if (fmtLocale === 'zh-CN') {
+        timeOnlyOpts.hour12 = false;
+        dateTimeOpts.hour12 = false;
+        fullDateOpts.hour12 = false;
+    }
     if (messageDate.getTime() === referenceToday.getTime()) {
-        return dateObj.toLocaleTimeString(fmtLocale, {
-            hour: '2-digit',
-            minute: '2-digit'
-        });
+        return dateObj.toLocaleTimeString(fmtLocale, timeOnlyOpts);
     }
     if (messageDate.getTime() === referenceYesterday.getTime()) {
-        return yesterdayLabel + ' ' + dateObj.toLocaleTimeString(fmtLocale, {
-            hour: '2-digit',
-            minute: '2-digit'
-        });
+        return yesterdayLabel + ' ' + dateObj.toLocaleTimeString(fmtLocale, timeOnlyOpts);
     }
     if (dateObj.getFullYear() === referenceToday.getFullYear()) {
-        return dateObj.toLocaleString(fmtLocale, {
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
+        return dateObj.toLocaleString(fmtLocale, dateTimeOpts);
     }
-    return dateObj.toLocaleString(fmtLocale, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-    });
+    return dateObj.toLocaleString(fmtLocale, fullDateOpts);
 }
 
 function getConversationGroup(dateObj, todayStart, startOfWeek, yesterdayStart) {
@@ -2127,7 +2176,7 @@ async function loadConversation(conversationId) {
             });
         } else {
             const readyMsgEmpty = typeof window.t === 'function' ? window.t('chat.systemReadyMessage') : '系统已就绪。请输入您的测试需求，系统将自动执行相应的安全测试。';
-            addMessage('assistant', readyMsgEmpty);
+            addMessage('assistant', readyMsgEmpty, null, null, null, { systemReadyMessage: true });
         }
         
         // 滚动到底部
@@ -2168,7 +2217,7 @@ async function deleteConversation(conversationId, skipConfirm = false) {
             currentConversationId = null;
             document.getElementById('chat-messages').innerHTML = '';
             const readyMsgLoad = typeof window.t === 'function' ? window.t('chat.systemReadyMessage') : '系统已就绪。请输入您的测试需求，系统将自动执行相应的安全测试。';
-            addMessage('assistant', readyMsgLoad);
+            addMessage('assistant', readyMsgLoad, null, null, null, { systemReadyMessage: true });
             addAttackChainButton(null);
         }
         
@@ -2256,7 +2305,9 @@ async function showAttackChain(conversationId) {
     }
     
     modal.style.display = 'block';
-    
+    // 打开时立即按当前语言刷新统计（避免红框内仍显示硬编码中文）
+    updateAttackChainStats({ nodes: [], edges: [] });
+
     // 清空容器
     const container = document.getElementById('attack-chain-container');
     if (container) {
@@ -3331,15 +3382,34 @@ function getNodeTypeLabel(type) {
     return labels[type] || type;
 }
 
-// 更新统计信息
+// 更新统计信息（使用 i18n，与 attackChainModal.nodesEdges 一致）
 function updateAttackChainStats(chainData) {
     const statsElement = document.getElementById('attack-chain-stats');
     if (statsElement) {
         const nodeCount = chainData.nodes ? chainData.nodes.length : 0;
         const edgeCount = chainData.edges ? chainData.edges.length : 0;
-        statsElement.textContent = `节点: ${nodeCount} | 边: ${edgeCount}`;
+        if (typeof window.t === 'function') {
+            statsElement.textContent = window.t('attackChainModal.nodesEdges', {
+                nodes: nodeCount,
+                edges: edgeCount
+            });
+        } else {
+            statsElement.textContent = `Nodes: ${nodeCount} | Edges: ${edgeCount}`;
+        }
     }
 }
+
+// 语言切换时刷新攻击链统计文案（动态 textContent 不会随 applyTranslations 更新）
+document.addEventListener('languagechange', function () {
+    if (window.attackChainOriginalData && typeof updateAttackChainStats === 'function') {
+        updateAttackChainStats(window.attackChainOriginalData);
+    } else {
+        const statsEl = document.getElementById('attack-chain-stats');
+        if (statsEl && typeof window.t === 'function') {
+            statsEl.textContent = window.t('attackChainModal.nodesEdges', { nodes: 0, edges: 0 });
+        }
+    }
+});
 
 // 关闭节点详情
 function closeNodeDetails() {
@@ -5203,11 +5273,18 @@ function closeBatchManageModal() {
     allConversationsForBatch = [];
 }
 
-// 语言切换时刷新批量管理模态框标题（若当前正在显示）
+// 语言切换时刷新批量管理模态框标题（若当前正在显示）；并刷新对话列表时间格式与系统就绪提示
 document.addEventListener('languagechange', function () {
+    refreshSystemReadyMessageBubbles();
     const modal = document.getElementById('batch-manage-modal');
     if (modal && modal.style.display === 'flex') {
         updateBatchManageTitle(allConversationsForBatch.length);
+    }
+    // 侧边栏最近对话等列表的时间戳会随语言变化（24h/12h 等），重新拉列表以统一格式
+    if (typeof loadConversationsWithGroups === 'function') {
+        loadConversationsWithGroups();
+    } else if (typeof loadConversations === 'function') {
+        loadConversations();
     }
 });
 

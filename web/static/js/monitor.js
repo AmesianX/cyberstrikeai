@@ -3,22 +3,55 @@ let activeTaskInterval = null;
 const ACTIVE_TASK_REFRESH_INTERVAL = 10000; // 10秒检查一次
 const TASK_FINAL_STATUSES = new Set(['failed', 'timeout', 'cancelled', 'completed']);
 
-// 将后端下发的进度文案转为当前语言的翻译（已知中文 key 映射）
+// 当前界面语言对应的 BCP 47 标签（与时间格式化一致）
+function getCurrentTimeLocale() {
+    if (typeof window.__locale === 'string' && window.__locale.length) {
+        return window.__locale.startsWith('zh') ? 'zh-CN' : 'en-US';
+    }
+    if (typeof i18next !== 'undefined' && i18next.language) {
+        return (i18next.language || '').startsWith('zh') ? 'zh-CN' : 'en-US';
+    }
+    return 'zh-CN';
+}
+
+// toLocaleTimeString 选项：中文用 24 小时制，避免仍显示 AM/PM
+function getTimeFormatOptions() {
+    const loc = getCurrentTimeLocale();
+    const base = { hour: '2-digit', minute: '2-digit', second: '2-digit' };
+    if (loc === 'zh-CN') {
+        base.hour12 = false;
+    }
+    return base;
+}
+
+// 将后端下发的进度文案转为当前语言的翻译（中英双向映射，切换语言后能跟上）
 function translateProgressMessage(message) {
     if (!message || typeof message !== 'string') return message;
     if (typeof window.t !== 'function') return message;
     const trim = message.trim();
     const map = {
+        // 中文
         '正在调用AI模型...': 'progress.callingAI',
         '最后一次迭代：正在生成总结和下一步计划...': 'progress.lastIterSummary',
         '总结生成完成': 'progress.summaryDone',
         '正在生成最终回复...': 'progress.generatingFinalReply',
-        '达到最大迭代次数，正在生成总结...': 'progress.maxIterSummary'
+        '达到最大迭代次数，正在生成总结...': 'progress.maxIterSummary',
+        // 英文（与 en-US.json 一致，避免后端/缓存已是英文时无法随语言切换）
+        'Calling AI model...': 'progress.callingAI',
+        'Last iteration: generating summary and next steps...': 'progress.lastIterSummary',
+        'Summary complete': 'progress.summaryDone',
+        'Generating final reply...': 'progress.generatingFinalReply',
+        'Max iterations reached, generating summary...': 'progress.maxIterSummary'
     };
     if (map[trim]) return window.t(map[trim]);
-    const callingToolPrefix = '正在调用工具: ';
-    if (trim.indexOf(callingToolPrefix) === 0) {
-        const name = trim.slice(callingToolPrefix.length);
+    const callingToolPrefixCn = '正在调用工具: ';
+    const callingToolPrefixEn = 'Calling tool: ';
+    if (trim.indexOf(callingToolPrefixCn) === 0) {
+        const name = trim.slice(callingToolPrefixCn.length);
+        return window.t('progress.callingTool', { name: name });
+    }
+    if (trim.indexOf(callingToolPrefixEn) === 0) {
+        const name = trim.slice(callingToolPrefixEn.length);
         return window.t('progress.callingTool', { name: name });
     }
     return message;
@@ -497,11 +530,12 @@ function handleStreamEvent(event, progressElement, progressId,
             }
             break;
         case 'iteration':
-            // 添加迭代标记
+            // 添加迭代标记（data 属性供语言切换时重算标题）
             addTimelineItem(timeline, 'iteration', {
                 title: typeof window.t === 'function' ? window.t('chat.iterationRound', { n: event.data?.iteration || 1 }) : '第 ' + (event.data?.iteration || 1) + ' 轮迭代',
                 message: event.message,
-                data: event.data
+                data: event.data,
+                iterationN: event.data?.iteration || 1
             });
             break;
             
@@ -569,6 +603,11 @@ function handleStreamEvent(event, progressElement, progressId,
         case 'progress':
             const progressTitle = document.querySelector(`#${progressId} .progress-title`);
             if (progressTitle) {
+                // 保存原文，语言切换时可用 translateProgressMessage 重新套当前语言
+                const progressEl = document.getElementById(progressId);
+                if (progressEl) {
+                    progressEl.dataset.progressRawMessage = event.message || '';
+                }
                 const progressMsg = translateProgressMessage(event.message);
                 progressTitle.textContent = '🔍 ' + progressMsg;
             }
@@ -855,6 +894,18 @@ function addTimelineItem(timeline, type, options) {
     const itemId = 'timeline-item-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
     item.id = itemId;
     item.className = `timeline-item timeline-item-${type}`;
+    // 记录类型与参数，便于 languagechange 时刷新标题文案
+    item.dataset.timelineType = type;
+    if (type === 'iteration' && options.iterationN != null) {
+        item.dataset.iterationN = String(options.iterationN);
+    }
+    if (type === 'tool_calls_detected' && options.data && options.data.count != null) {
+        item.dataset.toolCallsCount = String(options.data.count);
+    }
+    // 保存事件时间 ISO，语言切换时可重算时间格式
+    try {
+        item.dataset.createdAtIso = eventTime.toISOString();
+    } catch (e) { /* ignore */ }
     
     // 使用传入的createdAt时间，如果没有则使用当前时间（向后兼容）
     let eventTime;
@@ -875,8 +926,9 @@ function addTimelineItem(timeline, type, options) {
         eventTime = new Date();
     }
     
-    const timeLocale = (typeof window.__locale === 'string' && window.__locale.startsWith('zh')) ? 'zh-CN' : 'en-US';
-    const time = eventTime.toLocaleTimeString(timeLocale, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const timeLocale = getCurrentTimeLocale();
+    const timeOpts = getTimeFormatOptions();
+    const time = eventTime.toLocaleTimeString(timeLocale, timeOpts);
     
     let content = `
         <div class="timeline-item-header">
@@ -987,9 +1039,10 @@ function renderActiveTasks(tasks) {
         item.className = 'active-task-item';
 
         const startedTime = task.startedAt ? new Date(task.startedAt) : null;
-        const taskTimeLocale = (typeof window.__locale === 'string' && window.__locale.startsWith('zh')) ? 'zh-CN' : 'en-US';
+        const taskTimeLocale = getCurrentTimeLocale();
+        const timeOpts = getTimeFormatOptions();
         const timeText = startedTime && !isNaN(startedTime.getTime())
-            ? startedTime.toLocaleTimeString(taskTimeLocale, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+            ? startedTime.toLocaleTimeString(taskTimeLocale, timeOpts)
             : '';
 
         const _t = function (k) { return typeof window.t === 'function' ? window.t(k) : k; };
@@ -1686,6 +1739,76 @@ function formatExecutionDuration(start, end) {
     return typeof window.t === 'function' ? window.t('mcpMonitor.durationHoursOnly', { hours: hours }) : hours + ' 小时';
 }
 
+/**
+ * 语言切换后刷新对话页已渲染的进度条、时间线标题与时间格式（避免仍显示英文或 AM/PM）
+ */
+function refreshProgressAndTimelineI18n() {
+    const _t = function (k, o) {
+        return typeof window.t === 'function' ? window.t(k, o) : k;
+    };
+    const timeLocale = getCurrentTimeLocale();
+    const timeOpts = getTimeFormatOptions();
+
+    // 进度块内停止按钮：未禁用时统一为当前语言的「停止任务」（避免仍显示 Stop task）
+    document.querySelectorAll('.progress-message .progress-stop').forEach(function (btn) {
+        if (!btn.disabled && btn.id && btn.id.indexOf('-stop-btn') !== -1) {
+            const cancelling = _t('tasks.cancelling');
+            if (btn.textContent !== cancelling) {
+                btn.textContent = _t('tasks.stopTask');
+            }
+        }
+    });
+    document.querySelectorAll('.progress-toggle').forEach(function (btn) {
+        const timeline = btn.closest('.progress-container, .message-bubble') &&
+            btn.closest('.progress-container, .message-bubble').querySelector('.progress-timeline');
+        const expanded = timeline && timeline.classList.contains('expanded');
+        btn.textContent = expanded ? _t('tasks.collapseDetail') : _t('chat.expandDetail');
+    });
+    document.querySelectorAll('.progress-message').forEach(function (msgEl) {
+        const raw = msgEl.dataset.progressRawMessage;
+        const titleEl = msgEl.querySelector('.progress-title');
+        if (titleEl && raw) {
+            titleEl.textContent = '\uD83D\uDD0D ' + translateProgressMessage(raw);
+        }
+    });
+
+    // 时间线项：按类型重算标题，并重绘时间戳
+    document.querySelectorAll('.timeline-item').forEach(function (item) {
+        const type = item.dataset.timelineType;
+        const titleSpan = item.querySelector('.timeline-item-title');
+        const timeSpan = item.querySelector('.timeline-item-time');
+        if (!titleSpan) return;
+        if (type === 'iteration' && item.dataset.iterationN) {
+            const n = parseInt(item.dataset.iterationN, 10) || 1;
+            titleSpan.textContent = _t('chat.iterationRound', { n: n });
+        } else if (type === 'thinking') {
+            titleSpan.textContent = '\uD83E\uDD14 ' + _t('chat.aiThinking');
+        } else if (type === 'tool_calls_detected' && item.dataset.toolCallsCount != null) {
+            const count = parseInt(item.dataset.toolCallsCount, 10) || 0;
+            titleSpan.textContent = '\uD83D\uDD27 ' + _t('chat.toolCallsDetected', { count: count });
+        }
+        if (timeSpan && item.dataset.createdAtIso) {
+            const d = new Date(item.dataset.createdAtIso);
+            if (!isNaN(d.getTime())) {
+                timeSpan.textContent = d.toLocaleTimeString(timeLocale, timeOpts);
+            }
+        }
+    });
+
+    // 详情区「展开/收起」按钮
+    document.querySelectorAll('.process-detail-btn span').forEach(function (span) {
+        const btn = span.closest('.process-detail-btn');
+        const assistantId = btn && btn.closest('.message.assistant') && btn.closest('.message.assistant').id;
+        if (!assistantId) return;
+        const detailsId = 'process-details-' + assistantId;
+        const timeline = document.getElementById(detailsId) && document.getElementById(detailsId).querySelector('.progress-timeline');
+        const expanded = timeline && timeline.classList.contains('expanded');
+        span.textContent = expanded ? _t('tasks.collapseDetail') : _t('chat.expandDetail');
+    });
+}
+
 document.addEventListener('languagechange', function () {
     updateBatchActionsState();
+    loadActiveTasks();
+    refreshProgressAndTimelineI18n();
 });

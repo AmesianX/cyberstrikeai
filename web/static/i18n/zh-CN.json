@@ -1028,6 +1028,13 @@
     "title": "终端",
     "description": "在服务器上执行命令，便于运维与调试。命令在服务端执行，请勿执行敏感或破坏性操作。",
     "terminalTab": "终端 {{n}}",
+    "welcomeLine": "CyberStrikeAI 终端 - 真实 Shell 会话，直接输入命令；Ctrl+L 清屏",
+    "sessionClosed": "[会话已关闭]",
+    "connectionError": "[终端连接出错]",
+    "connectFailed": "[无法连接终端服务: {{msg}}]",
+    "closeTabTitle": "关闭",
+    "containerClickTitle": "点击此处后输入命令",
+    "xtermNotLoaded": "未加载 xterm.js，请刷新页面或检查网络。",
     "close": "×",
     "newTerminal": "+"
   },

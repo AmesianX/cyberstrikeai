@@ -6,6 +6,12 @@
 
     const loadedLangs = {};
 
+    // 供 bootstrap 等逻辑等待：避免 chat 在 t() 未就绪时用中文硬编码渲染，导致与语言标签不一致
+    let i18nReadyResolve;
+    window.i18nReady = new Promise(function (resolve) {
+        i18nReadyResolve = resolve;
+    });
+
     function detectInitialLang() {
         try {
             const stored = localStorage.getItem(STORAGE_KEY);
@@ -159,6 +165,7 @@
     async function initI18n() {
         if (typeof i18next === 'undefined') {
             console.warn('i18next 未加载，跳过前端国际化初始化');
+            if (typeof i18nReadyResolve === 'function') i18nReadyResolve();
             return;
         }
 
@@ -201,12 +208,22 @@
         };
 
         document.addEventListener('click', handleGlobalClickForLangDropdown);
+
+        // 若 chat 已在 i18n 完成前用后备中文渲染了系统就绪消息，这里按当前语言纠正一次
+        try {
+            if (typeof refreshSystemReadyMessageBubbles === 'function') {
+                refreshSystemReadyMessageBubbles();
+            }
+        } catch (e) { /* ignore */ }
+
+        if (typeof i18nReadyResolve === 'function') i18nReadyResolve();
     }
 
     document.addEventListener('DOMContentLoaded', function () {
         // i18n 初始化在 DOM Ready 后执行
         initI18n().catch(function (e) {
             console.error('初始化国际化失败:', e);
+            if (typeof i18nReadyResolve === 'function') i18nReadyResolve();
         });
     });
 })();
