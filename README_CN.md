@@ -531,6 +531,13 @@ CyberStrikeAI 现已加入 [404星链计划](https://github.com/knownsec/404Star
 
 ---
 
+## 许可证
+
+CyberStrikeAI 采用 **Apache License 2.0** 开源许可。  
+完整条款见仓库根目录 [LICENSE](LICENSE) 文件。
+
+---
+
 ## ⚠️ 免责声明
 
 **本工具仅供教育和授权测试使用！**

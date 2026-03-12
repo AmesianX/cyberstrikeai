@@ -534,6 +534,13 @@ CyberStrikeAI has joined [404Starlink](https://github.com/knownsec/404StarLink)
 
 ---
 
+## License
+
+CyberStrikeAI is licensed under the Apache License 2.0.  
+See the [LICENSE](LICENSE) file for details.
+
+---
+
 ## ⚠️ Disclaimer
 
 **This tool is for educational and authorized testing purposes only!**
