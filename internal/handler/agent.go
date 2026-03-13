@@ -330,9 +330,19 @@ func (h *AgentHandler) AgentLoop(c *gin.Context) {
 		if remark == "" {
 			remark = conn.URL
 		}
-		finalMessage = fmt.Sprintf("[WebShell 助手上下文] 当前连接 ID：%s，备注：%s。可用工具（仅在该连接上操作时使用，connection_id 填 \"%s\"）：webshell_exec、webshell_file_list、webshell_file_read、webshell_file_write。请根据用户输入决定下一步：若仅为问候、闲聊或简单问题，直接简短回复即可，不必调用工具；当用户明确需要执行命令、列目录、读写字件等操作时再调用上述工具。\n\n用户请求：%s",
+		finalMessage = fmt.Sprintf("[WebShell 助手上下文] 当前连接 ID：%s，备注：%s。可用工具（仅在该连接上操作时使用，connection_id 填 \"%s\"）：webshell_exec、webshell_file_list、webshell_file_read、webshell_file_write、record_vulnerability、list_knowledge_risk_types、search_knowledge_base、list_skills、read_skill。请根据用户输入决定下一步：若仅为问候、闲聊或简单问题，直接简短回复即可，不必调用工具；当用户明确需要执行命令、列目录、读写文件、记录漏洞或检索知识库/查看 Skills 等操作时再调用上述工具。\n\n用户请求：%s",
 			conn.ID, remark, conn.ID, req.Message)
-		roleTools = []string{builtin.ToolWebshellExec, builtin.ToolWebshellFileList, builtin.ToolWebshellFileRead, builtin.ToolWebshellFileWrite}
+		roleTools = []string{
+			builtin.ToolWebshellExec,
+			builtin.ToolWebshellFileList,
+			builtin.ToolWebshellFileRead,
+			builtin.ToolWebshellFileWrite,
+			builtin.ToolRecordVulnerability,
+			builtin.ToolListKnowledgeRiskTypes,
+			builtin.ToolSearchKnowledgeBase,
+			builtin.ToolListSkills,
+			builtin.ToolReadSkill,
+		}
 		roleSkills = nil
 	} else if req.Role != "" && req.Role != "默认" {
 		if h.config.Roles != nil {
@@ -805,9 +815,19 @@ func (h *AgentHandler) AgentLoopStream(c *gin.Context) {
 		if remark == "" {
 			remark = conn.URL
 		}
-		finalMessage = fmt.Sprintf("[WebShell 助手上下文] 当前连接 ID：%s，备注：%s。可用工具（仅在该连接上操作时使用，connection_id 填 \"%s\"）：webshell_exec、webshell_file_list、webshell_file_read、webshell_file_write。请根据用户输入决定下一步：若仅为问候、闲聊或简单问题，直接简短回复即可，不必调用工具；当用户明确需要执行命令、列目录、读写字件等操作时再调用上述工具。\n\n用户请求：%s",
+		finalMessage = fmt.Sprintf("[WebShell 助手上下文] 当前连接 ID：%s，备注：%s。可用工具（仅在该连接上操作时使用，connection_id 填 \"%s\"）：webshell_exec、webshell_file_list、webshell_file_read、webshell_file_write、record_vulnerability、list_knowledge_risk_types、search_knowledge_base、list_skills、read_skill。请根据用户输入决定下一步：若仅为问候、闲聊或简单问题，直接简短回复即可，不必调用工具；当用户明确需要执行命令、列目录、读写文件、记录漏洞或检索知识库/查看 Skills 等操作时再调用上述工具。\n\n用户请求：%s",
 			conn.ID, remark, conn.ID, req.Message)
-		roleTools = []string{builtin.ToolWebshellExec, builtin.ToolWebshellFileList, builtin.ToolWebshellFileRead, builtin.ToolWebshellFileWrite}
+		roleTools = []string{
+			builtin.ToolWebshellExec,
+			builtin.ToolWebshellFileList,
+			builtin.ToolWebshellFileRead,
+			builtin.ToolWebshellFileWrite,
+			builtin.ToolRecordVulnerability,
+			builtin.ToolListKnowledgeRiskTypes,
+			builtin.ToolSearchKnowledgeBase,
+			builtin.ToolListSkills,
+			builtin.ToolReadSkill,
+		}
 	} else if req.Role != "" && req.Role != "默认" {
 		if h.config.Roles != nil {
 			if role, exists := h.config.Roles[req.Role]; exists && role.Enabled {

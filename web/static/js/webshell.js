@@ -351,7 +351,15 @@ function webshellAiConvListSelect(conn, convId, messagesContainer, listEl) {
                 if (!content && role !== 'assistant') return;
                 var div = document.createElement('div');
                 div.className = 'webshell-ai-msg ' + (role === 'user' ? 'user' : 'assistant');
-                div.textContent = content;
+                if (role === 'user') {
+                    div.textContent = content;
+                } else {
+                    if (typeof formatMarkdown === 'function') {
+                        div.innerHTML = formatMarkdown(content);
+                    } else {
+                        div.textContent = content;
+                    }
+                }
                 messagesContainer.appendChild(div);
             });
             if (list.length === 0) {
@@ -546,7 +554,15 @@ function loadWebshellAiHistory(conn, messagesContainer) {
                 if (!content && role !== 'assistant') return;
                 var div = document.createElement('div');
                 div.className = 'webshell-ai-msg ' + (role === 'user' ? 'user' : 'assistant');
-                div.textContent = content;
+                if (role === 'user') {
+                    div.textContent = content;
+                } else {
+                    if (typeof formatMarkdown === 'function') {
+                        div.innerHTML = formatMarkdown(content);
+                    } else {
+                        div.textContent = content;
+                    }
+                }
                 messagesContainer.appendChild(div);
             });
             if (list.length === 0) {
@@ -598,11 +614,51 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
     messagesContainer.appendChild(assistantDiv);
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
-    function appendTimelineItem(type, title, message) {
+    function appendTimelineItem(type, title, message, data) {
         var item = document.createElement('div');
         item.className = 'webshell-ai-timeline-item webshell-ai-timeline-' + type;
-        item.innerHTML = '<span class="webshell-ai-timeline-title">' + escapeHtml(title || message || '') + '</span>';
-        if (message && message !== title) item.innerHTML += '<div class="webshell-ai-timeline-msg">' + escapeHtml(message) + '</div>';
+
+        var html = '<span class="webshell-ai-timeline-title">' + escapeHtml(title || message || '') + '</span>';
+
+        // 工具调用入参
+        if (type === 'tool_call' && data) {
+            try {
+                var args = data.argumentsObj || (data.arguments ? JSON.parse(data.arguments) : null);
+                if (args && typeof args === 'object') {
+                    var paramsLabel = (typeof window.t === 'function') ? window.t('timeline.params') : '参数:';
+                    html += '<div class="webshell-ai-timeline-msg"><div class="tool-arg-section"><strong>' +
+                        escapeHtml(paramsLabel) +
+                        '</strong><pre class="tool-args">' +
+                        escapeHtml(JSON.stringify(args, null, 2)) +
+                        '</pre></div></div>';
+                }
+            } catch (e) {
+                // JSON 解析失败时忽略参数详情，避免打断主流程
+            }
+        } else if (type === 'tool_result' && data) {
+            // 工具调用出参
+            var isError = data.isError || data.success === false;
+            var noResultText = (typeof window.t === 'function') ? window.t('timeline.noResult') : '无结果';
+            var result = data.result != null ? data.result : (data.error != null ? data.error : noResultText);
+            var resultStr = (typeof result === 'string') ? result : JSON.stringify(result);
+            var execResultLabel = (typeof window.t === 'function') ? window.t('timeline.executionResult') : '执行结果:';
+            var execIdLabel = (typeof window.t === 'function') ? window.t('timeline.executionId') : '执行ID:';
+            html += '<div class="webshell-ai-timeline-msg"><div class="tool-result-section ' +
+                (isError ? 'error' : 'success') +
+                '"><strong>' + escapeHtml(execResultLabel) + '</strong><pre class="tool-result">' +
+                escapeHtml(resultStr) +
+                '</pre>' +
+                (data.executionId ? '<div class="tool-execution-id"><span>' +
+                    escapeHtml(execIdLabel) +
+                    '</span> <code>' +
+                    escapeHtml(String(data.executionId)) +
+                    '</code></div>' : '') +
+                '</div></div>';
+        } else if (message && message !== title) {
+            html += '<div class="webshell-ai-timeline-msg">' + escapeHtml(message) + '</div>';
+        }
+
+        item.innerHTML = html;
         timelineContainer.appendChild(item);
         timelineContainer.classList.add('has-items');
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -663,38 +719,54 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
                         }
                     } else if (eventData.type === 'error' && eventData.message) {
                         streamingTypingId += 1;
-                        appendTimelineItem('error', '❌ 错误', eventData.message);
-                        assistantDiv.textContent = '错误: ' + eventData.message;
+                        var errLabel = (typeof window.t === 'function') ? window.t('chat.error') : '错误';
+                        appendTimelineItem('error', '❌ ' + errLabel, eventData.message, eventData.data);
+                        assistantDiv.textContent = errLabel + ': ' + eventData.message;
                     } else if (eventData.type === 'progress' && eventData.message) {
-                        appendTimelineItem('progress', '🔍 ' + eventData.message, '');
+                        var progressMsg = (typeof window.translateProgressMessage === 'function')
+                            ? window.translateProgressMessage(eventData.message)
+                            : eventData.message;
+                        appendTimelineItem('progress', '🔍 ' + progressMsg, '', eventData.data);
                         if (!streamingTarget) assistantDiv.textContent = '…';
                     } else if (eventData.type === 'iteration') {
                         var iterN = (eventData.data && eventData.data.iteration) || 0;
-                        var iterTitle = iterN ? '🔍 第 ' + iterN + ' 轮迭代' : ('🔍 ' + (eventData.message || '迭代'));
-                        appendTimelineItem('iteration', iterTitle, eventData.message || '');
+                        var iterTitle = (typeof window.t === 'function')
+                            ? window.t('chat.iterationRound', { n: iterN || 1 })
+                            : (iterN ? ('第 ' + iterN + ' 轮迭代') : (eventData.message || '迭代'));
+                        appendTimelineItem('iteration', '🔍 ' + iterTitle, eventData.message || '', eventData.data);
                         if (!streamingTarget) assistantDiv.textContent = '…';
                     } else if (eventData.type === 'thinking' && eventData.message) {
-                        appendTimelineItem('thinking', '🤔 AI 思考', eventData.message);
+                        var thinkLabel = (typeof window.t === 'function') ? window.t('chat.aiThinking') : 'AI 思考';
+                        appendTimelineItem('thinking', '🤔 ' + thinkLabel, eventData.message, eventData.data);
                         if (!streamingTarget) assistantDiv.textContent = '…';
                     } else if (eventData.type === 'tool_calls_detected' && eventData.data) {
                         var count = eventData.data.count || 0;
-                        appendTimelineItem('tool_calls_detected', '🔧 检测到 ' + count + ' 个工具调用', eventData.message || '');
+                        var detectedLabel = (typeof window.t === 'function')
+                            ? window.t('chat.toolCallsDetected', { count: count })
+                            : ('检测到 ' + count + ' 个工具调用');
+                        appendTimelineItem('tool_calls_detected', '🔧 ' + detectedLabel, eventData.message || '', eventData.data);
                         if (!streamingTarget) assistantDiv.textContent = '…';
                     } else if (eventData.type === 'tool_call' && eventData.data) {
                         var d = eventData.data;
                         var tn = d.toolName || '未知工具';
                         var idx = d.index || 0;
                         var total = d.total || 0;
-                        var title = '🔧 调用: ' + tn + (total ? ' (' + idx + '/' + total + ')' : '');
-                        appendTimelineItem('tool_call', title, eventData.message || '');
+                        var callTitle = (typeof window.t === 'function')
+                            ? window.t('chat.callTool', { name: tn, index: idx, total: total })
+                            : ('调用: ' + tn + (total ? ' (' + idx + '/' + total + ')' : ''));
+                        var title = '🔧 ' + callTitle;
+                        appendTimelineItem('tool_call', title, eventData.message || '', eventData.data);
                         if (!streamingTarget) assistantDiv.textContent = '…';
                     } else if (eventData.type === 'tool_result' && eventData.data) {
                         var dr = eventData.data;
                         var success = dr.success !== false;
                         var tname = dr.toolName || '工具';
-                        var title = (success ? '✅ ' : '❌ ') + tname + (success ? ' 执行完成' : ' 执行失败');
+                        var titleText = (typeof window.t === 'function')
+                            ? (success ? window.t('chat.toolExecComplete', { name: tname }) : window.t('chat.toolExecFailed', { name: tname }))
+                            : (tname + (success ? ' 执行完成' : ' 执行失败'));
+                        var title = (success ? '✅ ' : '❌ ') + titleText;
                         var sub = eventData.message || (dr.result ? String(dr.result).slice(0, 300) : '');
-                        appendTimelineItem('tool_result', title, sub);
+                        appendTimelineItem('tool_result', title, sub, eventData.data);
                         if (!streamingTarget) assistantDiv.textContent = '…';
                     }
                 } catch (e) { /* ignore parse error */ }

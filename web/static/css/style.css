@@ -9285,6 +9285,69 @@ header {
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
 }
+/* AI 助手 markdown 渲染优化：避免行间距离过大和内容横向溢出 */
+.webshell-ai-msg.assistant {
+    /* markdown 里已经有块级元素，不需要再整体 pre-wrap，否则容易在块之间产生“空行”感 */
+    white-space: normal;
+}
+.webshell-ai-msg.assistant p,
+.webshell-ai-msg.assistant ul,
+.webshell-ai-msg.assistant ol,
+.webshell-ai-msg.assistant pre,
+.webshell-ai-msg.assistant blockquote {
+    margin-top: 0;
+    margin-bottom: 4px;
+}
+.webshell-ai-msg.assistant p:last-child,
+.webshell-ai-msg.assistant ul:last-child,
+.webshell-ai-msg.assistant ol:last-child,
+.webshell-ai-msg.assistant pre:last-child,
+.webshell-ai-msg.assistant blockquote:last-child {
+    margin-bottom: 0;
+}
+.webshell-ai-msg pre {
+    font-family: var(--font-mono, Menlo, Monaco, Consolas, "Courier New", monospace);
+    font-size: 0.82rem;
+    background: #020617;
+    color: #e5e7eb;
+    border-radius: 6px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    max-width: 100%;
+    white-space: pre;
+    box-sizing: border-box;
+}
+.webshell-ai-msg pre code {
+    padding: 0;
+    background: transparent;
+}
+.webshell-ai-msg code {
+    font-family: var(--font-mono, Menlo, Monaco, Consolas, "Courier New", monospace);
+    font-size: 0.82rem;
+    background: rgba(15, 23, 42, 0.06);
+    color: inherit;
+    border-radius: 4px;
+    padding: 0.1em 0.4em;
+    white-space: normal;
+    box-sizing: border-box;
+}
+.webshell-ai-msg table {
+    width: 100%;
+    max-width: 100%;
+    border-collapse: collapse;
+    overflow-x: auto;
+    display: block;
+}
+.webshell-ai-msg table th,
+.webshell-ai-msg table td {
+    border: 1px solid var(--border-color);
+    padding: 4px 6px;
+    font-size: 0.8rem;
+}
+.webshell-ai-msg ul,
+.webshell-ai-msg ol {
+    padding-left: 20px;
+}
 .webshell-ai-input-row {
     flex-shrink: 0;
     display: flex;
