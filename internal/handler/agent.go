@@ -662,8 +662,16 @@ func (h *AgentHandler) createProgressCallback(conversationID, assistantMessageID
 			}
 		}
 
-		// 保存过程详情到数据库（排除response和done事件，它们会在后面单独处理）
-		if assistantMessageID != "" && eventType != "response" && eventType != "done" {
+		// 保存过程详情到数据库（排除response/done事件，它们会在后面单独处理）
+		// 另外：response_start/response_delta 是模型流式增量，保存会导致过程详情膨胀，因此不落库。
+		if assistantMessageID != "" &&
+			eventType != "response" &&
+			eventType != "done" &&
+			eventType != "response_start" &&
+			eventType != "response_delta" &&
+			eventType != "tool_result_delta" &&
+			eventType != "thinking_stream_start" &&
+			eventType != "thinking_stream_delta" {
 			if err := h.db.AddProcessDetail(assistantMessageID, conversationID, eventType, message, data); err != nil {
 				h.logger.Warn("保存过程详情失败", zap.Error(err), zap.String("eventType", eventType))
 			}
@@ -703,8 +711,53 @@ func (h *AgentHandler) AgentLoopStream(c *gin.Context) {
 	// 发送初始事件
 	// 用于跟踪客户端是否已断开连接
 	clientDisconnected := false
+	// 用于快速确认模型是否真的产生了流式 delta
+	var responseDeltaCount int
+	var responseStartLogged bool
 
 	sendEvent := func(eventType, message string, data interface{}) {
+		if eventType == "response_start" {
+			responseDeltaCount = 0
+			responseStartLogged = true
+			h.logger.Info("SSE: response_start",
+				zap.Int("conversationIdPresent", func() int {
+					if m, ok := data.(map[string]interface{}); ok {
+						if v, ok2 := m["conversationId"]; ok2 && v != nil && fmt.Sprint(v) != "" {
+							return 1
+						}
+					}
+					return 0
+				}()),
+				zap.String("messageGeneratedBy", func() string {
+					if m, ok := data.(map[string]interface{}); ok {
+						if v, ok2 := m["messageGeneratedBy"]; ok2 {
+							if s, ok3 := v.(string); ok3 {
+								return s
+							}
+							return fmt.Sprint(v)
+						}
+					}
+					return ""
+				}()),
+			)
+		} else if eventType == "response_delta" {
+			responseDeltaCount++
+			// 只打前几条，避免刷屏
+			if responseStartLogged && responseDeltaCount <= 3 {
+				h.logger.Info("SSE: response_delta",
+					zap.Int("index", responseDeltaCount),
+					zap.Int("deltaLen", len(message)),
+					zap.String("deltaPreview", func() string {
+						p := strings.ReplaceAll(message, "\n", "\\n")
+						if len(p) > 80 {
+							return p[:80] + "..."
+						}
+						return p
+					}()),
+				)
+			}
+		}
+
 		// 如果客户端已断开，不再发送事件
 		if clientDisconnected {
 			return

@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/mcp"
@@ -16,6 +18,15 @@ import (
 
 	"go.uber.org/zap"
 )
+
+// ToolOutputCallback 用于在工具执行过程中把 stdout/stderr 增量推给上层（SSE）。
+// 通过 context 传递，避免修改 MCP ToolHandler 签名导致的“写死工具”问题。
+type ToolOutputCallback func(chunk string)
+
+type toolOutputCallbackCtxKey struct{}
+
+// ToolOutputCallbackCtxKey 是 context 中的 key，供 Agent 写入回调，Executor 读取并流式回调。
+var ToolOutputCallbackCtxKey = toolOutputCallbackCtxKey{}
 
 // Executor 安全工具执行器
 type Executor struct {
@@ -144,7 +155,16 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 		zap.Strings("args", cmdArgs),
 	)
 
-	output, err := cmd.CombinedOutput()
+	var output string
+	var err error
+	// 如果上层提供了 stdout/stderr 增量回调，则边执行边读取并回调。
+	if cb, ok := ctx.Value(ToolOutputCallbackCtxKey).(ToolOutputCallback); ok && cb != nil {
+		output, err = streamCommandOutput(cmd, cb)
+	} else {
+		outputBytes, err2 := cmd.CombinedOutput()
+		output = string(outputBytes)
+		err = err2
+	}
 	if err != nil {
 		// 检查退出码是否在允许列表中
 		exitCode := getExitCode(err)
@@ -931,7 +951,16 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 	}
 
 	// 非后台命令：等待输出
-	output, err := cmd.CombinedOutput()
+	var output string
+	var err error
+	// 若上层提供工具输出增量回调，则边执行边流式读取。
+	if cb, ok := ctx.Value(ToolOutputCallbackCtxKey).(ToolOutputCallback); ok && cb != nil {
+		output, err = streamCommandOutput(cmd, cb)
+	} else {
+		outputBytes, err2 := cmd.CombinedOutput()
+		output = string(outputBytes)
+		err = err2
+	}
 	if err != nil {
 		e.logger.Error("系统命令执行失败",
 			zap.String("command", command),
@@ -963,6 +992,78 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 		},
 		IsError: false,
 	}, nil
+}
+
+// streamCommandOutput 以“边读边回调”的方式读取命令 stdout/stderr。
+// 保持输出内容完整拼接返回，并用 cb(chunk) 向上层持续推送。
+func streamCommandOutput(cmd *exec.Cmd, cb ToolOutputCallback) (string, error) {
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		_ = stdoutPipe.Close()
+		return "", err
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdoutPipe.Close()
+		_ = stderrPipe.Close()
+		return "", err
+	}
+
+	chunks := make(chan string, 64)
+	var wg sync.WaitGroup
+	readFn := func(r io.Reader) {
+		defer wg.Done()
+		br := bufio.NewReader(r)
+		for {
+			s, readErr := br.ReadString('\n')
+			if s != "" {
+				chunks <- s
+			}
+			if readErr != nil {
+				// EOF 正常结束
+				return
+			}
+		}
+	}
+
+	wg.Add(2)
+	go readFn(stdoutPipe)
+	go readFn(stderrPipe)
+
+	go func() {
+		wg.Wait()
+		close(chunks)
+	}()
+
+	var outBuilder strings.Builder
+	var deltaBuilder strings.Builder
+	lastFlush := time.Now()
+
+	flush := func() {
+		if deltaBuilder.Len() == 0 {
+			return
+		}
+		cb(deltaBuilder.String())
+		deltaBuilder.Reset()
+		lastFlush = time.Now()
+	}
+
+	for chunk := range chunks {
+		outBuilder.WriteString(chunk)
+		deltaBuilder.WriteString(chunk)
+		// 简单节流：buffer 大于 2KB 或 200ms 就刷新一次
+		if deltaBuilder.Len() >= 2048 || time.Since(lastFlush) >= 200*time.Millisecond {
+			flush()
+		}
+	}
+	flush()
+
+	// 等待命令结束，返回最终退出状态
+	waitErr := cmd.Wait()
+	return outBuilder.String(), waitErr
 }
 
 // executeInternalTool 执行内部工具（不执行外部命令）

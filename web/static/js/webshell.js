@@ -797,10 +797,25 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
                                 el.classList.toggle('active', el.dataset.convId === convId);
                             });
                         });
+                    } else if (eventData.type === 'response_start') {
+                        streamingTarget = '';
+                        webshellStreamingTypingId += 1;
+                        streamingTypingId = webshellStreamingTypingId;
+                        assistantDiv.textContent = '…';
+                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                    } else if (eventData.type === 'response_delta') {
+                        var deltaText = (eventData.message != null && eventData.message !== '') ? String(eventData.message) : '';
+                        if (deltaText) {
+                            streamingTarget += deltaText;
+                            webshellStreamingTypingId += 1;
+                            streamingTypingId = webshellStreamingTypingId;
+                            runWebshellAiStreamingTyping(assistantDiv, streamingTarget, streamingTypingId, messagesContainer);
+                        }
                     } else if (eventData.type === 'response') {
                         var text = (eventData.message != null && eventData.message !== '') ? eventData.message : (eventData.data && typeof eventData.data === 'string' ? eventData.data : '');
                         if (text) {
-                            streamingTarget += text;
+                            // response 为最终完整内容：避免与增量重复拼接
+                            streamingTarget = String(text);
                             webshellStreamingTypingId += 1;
                             streamingTypingId = webshellStreamingTypingId;
                             runWebshellAiStreamingTyping(assistantDiv, streamingTarget, streamingTypingId, messagesContainer);

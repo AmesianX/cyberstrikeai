@@ -67,6 +67,75 @@ if (typeof window !== 'undefined') {
 // 存储工具调用ID到DOM元素的映射，用于更新执行状态
 const toolCallStatusMap = new Map();
 
+// 模型流式输出缓存：progressId -> { assistantId, buffer }
+const responseStreamStateByProgressId = new Map();
+
+// AI 思考流式输出：progressId -> Map(streamId -> { itemId, buffer })
+const thinkingStreamStateByProgressId = new Map();
+
+// 工具输出流式增量：progressId::toolCallId -> { itemId, buffer }
+const toolResultStreamStateByKey = new Map();
+function toolResultStreamKey(progressId, toolCallId) {
+    return String(progressId) + '::' + String(toolCallId);
+}
+
+// markdown 渲染（用于最终合并渲染；流式增量阶段用纯转义避免部分语法不稳定）
+const assistantMarkdownSanitizeConfig = {
+    ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 's', 'code', 'pre', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr'],
+    ALLOWED_ATTR: ['href', 'title', 'alt', 'src', 'class'],
+    ALLOW_DATA_ATTR: false,
+};
+
+function escapeHtmlLocal(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = String(text);
+    return div.innerHTML;
+}
+
+function formatAssistantMarkdownContent(text) {
+    const raw = text == null ? '' : String(text);
+    if (typeof marked !== 'undefined') {
+        try {
+            marked.setOptions({ breaks: true, gfm: true });
+            const parsed = marked.parse(raw);
+            if (typeof DOMPurify !== 'undefined') {
+                return DOMPurify.sanitize(parsed, assistantMarkdownSanitizeConfig);
+            }
+            return parsed;
+        } catch (e) {
+            return escapeHtmlLocal(raw).replace(/\n/g, '<br>');
+        }
+    }
+    return escapeHtmlLocal(raw).replace(/\n/g, '<br>');
+}
+
+function updateAssistantBubbleContent(assistantMessageId, content, renderMarkdown) {
+    const assistantElement = document.getElementById(assistantMessageId);
+    if (!assistantElement) return;
+    const bubble = assistantElement.querySelector('.message-bubble');
+    if (!bubble) return;
+
+    // 保留复制按钮：addMessage 会把按钮 append 在 message-bubble 里
+    const copyBtn = bubble.querySelector('.message-copy-btn');
+    if (copyBtn) copyBtn.remove();
+
+    const newContent = content == null ? '' : String(content);
+    const html = renderMarkdown
+        ? formatAssistantMarkdownContent(newContent)
+        : escapeHtmlLocal(newContent).replace(/\n/g, '<br>');
+
+    bubble.innerHTML = html;
+
+    // 更新原始内容（给复制功能用）
+    assistantElement.dataset.originalContent = newContent;
+
+    if (typeof wrapTablesInBubble === 'function') {
+        wrapTablesInBubble(bubble);
+    }
+    if (copyBtn) bubble.appendChild(copyBtn);
+}
+
 const conversationExecutionTracker = {
     activeConversations: new Set(),
     update(tasks = []) {
@@ -543,7 +612,77 @@ function handleStreamEvent(event, progressElement, progressId,
             });
             break;
             
+        case 'thinking_stream_start': {
+            const d = event.data || {};
+            const streamId = d.streamId || null;
+            if (!streamId) break;
+
+            let state = thinkingStreamStateByProgressId.get(progressId);
+            if (!state) {
+                state = new Map();
+                thinkingStreamStateByProgressId.set(progressId, state);
+            }
+            // 若已存在，重置 buffer
+            const title = '🤔 ' + (typeof window.t === 'function' ? window.t('chat.aiThinking') : 'AI思考');
+            const itemId = addTimelineItem(timeline, 'thinking', {
+                title: title,
+                message: ' ',
+                data: d
+            });
+            state.set(streamId, { itemId, buffer: '' });
+            break;
+        }
+
+        case 'thinking_stream_delta': {
+            const d = event.data || {};
+            const streamId = d.streamId || null;
+            if (!streamId) break;
+
+            const state = thinkingStreamStateByProgressId.get(progressId);
+            if (!state || !state.has(streamId)) break;
+            const s = state.get(streamId);
+
+            const delta = event.message || '';
+            s.buffer += delta;
+
+            const item = document.getElementById(s.itemId);
+            if (item) {
+                const contentEl = item.querySelector('.timeline-item-content');
+                if (contentEl) {
+                    if (typeof formatMarkdown === 'function') {
+                        contentEl.innerHTML = formatMarkdown(s.buffer);
+                    } else {
+                        contentEl.textContent = s.buffer;
+                    }
+                }
+            }
+            break;
+        }
+
         case 'thinking':
+            // 如果本 thinking 是由 thinking_stream_* 聚合出来的（带 streamId），避免重复创建 timeline item
+            if (event.data && event.data.streamId) {
+                const streamId = event.data.streamId;
+                const state = thinkingStreamStateByProgressId.get(progressId);
+                if (state && state.has(streamId)) {
+                    const s = state.get(streamId);
+                    s.buffer = event.message || '';
+                    const item = document.getElementById(s.itemId);
+                    if (item) {
+                        const contentEl = item.querySelector('.timeline-item-content');
+                        if (contentEl) {
+                            // contentEl.innerHTML 用于兼容 Markdown 展示
+                            if (typeof formatMarkdown === 'function') {
+                                contentEl.innerHTML = formatMarkdown(s.buffer);
+                            } else {
+                                contentEl.textContent = s.buffer;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+
             addTimelineItem(timeline, 'thinking', {
                 title: '🤔 ' + (typeof window.t === 'function' ? window.t('chat.aiThinking') : 'AI思考'),
                 message: event.message,
@@ -584,6 +723,55 @@ function handleStreamEvent(event, progressElement, progressId,
                 updateToolCallStatus(toolCallId, 'running');
             }
             break;
+
+        case 'tool_result_delta': {
+            const deltaInfo = event.data || {};
+            const toolCallId = deltaInfo.toolCallId || null;
+            if (!toolCallId) break;
+
+            const key = toolResultStreamKey(progressId, toolCallId);
+            let state = toolResultStreamStateByKey.get(key);
+            const toolNameDelta = deltaInfo.toolName || (typeof window.t === 'function' ? window.t('chat.unknownTool') : '未知工具');
+            const deltaText = event.message || '';
+            if (!deltaText) break;
+
+            if (!state) {
+                // 首次增量：创建一个 tool_result 占位条目，后续不断更新 pre 内容
+                const runningLabel = typeof window.t === 'function' ? window.t('timeline.running') : '执行中...';
+                const title = '⏳ ' + (typeof window.t === 'function'
+                    ? window.t('timeline.running')
+                    : runningLabel) + ' ' + (typeof window.t === 'function' ? window.t('chat.callTool', { name: escapeHtmlLocal(toolNameDelta), index: deltaInfo.index || 0, total: deltaInfo.total || 0 }) : toolNameDelta);
+
+                const itemId = addTimelineItem(timeline, 'tool_result', {
+                    title: title,
+                    message: '',
+                    data: {
+                        toolName: toolNameDelta,
+                        success: true,
+                        isError: false,
+                        result: deltaText,
+                        toolCallId: toolCallId,
+                        index: deltaInfo.index,
+                        total: deltaInfo.total,
+                        iteration: deltaInfo.iteration
+                    },
+                    expanded: false
+                });
+
+                state = { itemId, buffer: '' };
+                toolResultStreamStateByKey.set(key, state);
+            }
+
+            state.buffer += deltaText;
+            const item = document.getElementById(state.itemId);
+            if (item) {
+                const pre = item.querySelector('pre.tool-result');
+                if (pre) {
+                    pre.textContent = state.buffer;
+                }
+            }
+            break;
+        }
             
         case 'tool_result':
             const resultInfo = event.data || {};
@@ -592,6 +780,39 @@ function handleStreamEvent(event, progressElement, progressId,
             const statusIcon = success ? '✅' : '❌';
             const resultToolCallId = resultInfo.toolCallId || null;
             const resultExecText = success ? (typeof window.t === 'function' ? window.t('chat.toolExecComplete', { name: escapeHtml(resultToolName) }) : '工具 ' + escapeHtml(resultToolName) + ' 执行完成') : (typeof window.t === 'function' ? window.t('chat.toolExecFailed', { name: escapeHtml(resultToolName) }) : '工具 ' + escapeHtml(resultToolName) + ' 执行失败');
+
+            // 若此 tool 已经流式推送过增量，则复用占位条目并更新最终结果，避免重复添加一条
+            if (resultToolCallId) {
+                const key = toolResultStreamKey(progressId, resultToolCallId);
+                const state = toolResultStreamStateByKey.get(key);
+                if (state && state.itemId) {
+                    const item = document.getElementById(state.itemId);
+                    if (item) {
+                        const pre = item.querySelector('pre.tool-result');
+                        const resultVal = resultInfo.result || resultInfo.error || '';
+                        if (pre) pre.textContent = typeof resultVal === 'string' ? resultVal : JSON.stringify(resultVal);
+
+                        const section = item.querySelector('.tool-result-section');
+                        if (section) {
+                            section.className = 'tool-result-section ' + (success ? 'success' : 'error');
+                        }
+
+                        const titleEl = item.querySelector('.timeline-item-title');
+                        if (titleEl) {
+                            titleEl.textContent = statusIcon + ' ' + resultExecText;
+                        }
+                    }
+                    toolResultStreamStateByKey.delete(key);
+
+                    // 同时更新 tool_call 的状态
+                    if (resultToolCallId && toolCallStatusMap.has(resultToolCallId)) {
+                        updateToolCallStatus(resultToolCallId, success ? 'completed' : 'failed');
+                        toolCallStatusMap.delete(resultToolCallId);
+                    }
+                    break;
+                }
+            }
+
             if (resultToolCallId && toolCallStatusMap.has(resultToolCallId)) {
                 updateToolCallStatus(resultToolCallId, success ? 'completed' : 'failed');
                 toolCallStatusMap.delete(resultToolCallId);
@@ -683,47 +904,108 @@ function handleStreamEvent(event, progressElement, progressId,
             loadActiveTasks();
             break;
             
-        case 'response':
-            // 在更新之前，先获取任务对应的原始对话ID
+        case 'response_start': {
             const responseTaskState = progressTaskState.get(progressId);
             const responseOriginalConversationId = responseTaskState?.conversationId;
-            
-            // 先添加助手回复
+
             const responseData = event.data || {};
             const mcpIds = responseData.mcpExecutionIds || [];
             setMcpIds(mcpIds);
-            
-            // 更新对话ID
+
             if (responseData.conversationId) {
-                // 如果用户已经开始了新对话（currentConversationId 为 null），
-                // 且这个 response 事件来自旧对话，就不更新 currentConversationId 也不添加消息
+                // 如果用户已经开始了新对话（currentConversationId 为 null），且这个事件来自旧对话，则忽略
                 if (currentConversationId === null && responseOriginalConversationId !== null) {
-                    // 用户已经开始了新对话，忽略旧对话的 response 事件
-                    // 但仍然更新任务状态，以便正确显示任务信息
                     updateProgressConversation(progressId, responseData.conversationId);
                     break;
                 }
-                
                 currentConversationId = responseData.conversationId;
                 updateActiveConversation();
                 addAttackChainButton(currentConversationId);
                 updateProgressConversation(progressId, responseData.conversationId);
                 loadActiveTasks();
             }
-            
-            // 添加助手回复，并传入进度ID以便集成详情
-            const assistantId = addMessage('assistant', event.message, mcpIds, progressId);
+
+            // 已存在则复用；否则创建空助手消息占位，用于增量追加
+            const existing = responseStreamStateByProgressId.get(progressId);
+            if (existing && existing.assistantId) break;
+
+            const assistantId = addMessage('assistant', '', mcpIds, progressId);
             setAssistantId(assistantId);
-            
-            // 将进度详情集成到工具调用区域
-            integrateProgressToMCPSection(progressId, assistantId);
-            
-            // 延迟自动折叠详情（3秒后）
+            responseStreamStateByProgressId.set(progressId, { assistantId, buffer: '' });
+            break;
+        }
+
+        case 'response_delta': {
+            const responseData = event.data || {};
+            const responseTaskState = progressTaskState.get(progressId);
+            const responseOriginalConversationId = responseTaskState?.conversationId;
+
+            if (responseData.conversationId) {
+                if (currentConversationId === null && responseOriginalConversationId !== null) {
+                    updateProgressConversation(progressId, responseData.conversationId);
+                    break;
+                }
+            }
+
+            let state = responseStreamStateByProgressId.get(progressId);
+            if (!state || !state.assistantId) {
+                const mcpIds = responseData.mcpExecutionIds || [];
+                const assistantId = addMessage('assistant', '', mcpIds, progressId);
+                setAssistantId(assistantId);
+                state = { assistantId, buffer: '' };
+                responseStreamStateByProgressId.set(progressId, state);
+            }
+
+            state.buffer += (event.message || '');
+            updateAssistantBubbleContent(state.assistantId, state.buffer, false);
+            break;
+        }
+
+        case 'response':
+            // 在更新之前，先获取任务对应的原始对话ID
+            const responseTaskState = progressTaskState.get(progressId);
+            const responseOriginalConversationId = responseTaskState?.conversationId;
+
+            // 先更新 mcp ids
+            const responseData = event.data || {};
+            const mcpIds = responseData.mcpExecutionIds || [];
+            setMcpIds(mcpIds);
+
+            // 更新对话ID
+            if (responseData.conversationId) {
+                if (currentConversationId === null && responseOriginalConversationId !== null) {
+                    updateProgressConversation(progressId, responseData.conversationId);
+                    break;
+                }
+
+                currentConversationId = responseData.conversationId;
+                updateActiveConversation();
+                addAttackChainButton(currentConversationId);
+                updateProgressConversation(progressId, responseData.conversationId);
+                loadActiveTasks();
+            }
+
+            // 如果之前已经在 response_start/response_delta 阶段创建过占位，则复用该消息更新最终内容
+            const streamState = responseStreamStateByProgressId.get(progressId);
+            const existingAssistantId = streamState?.assistantId || getAssistantId();
+            let assistantIdFinal = existingAssistantId;
+
+            if (!assistantIdFinal) {
+                assistantIdFinal = addMessage('assistant', event.message, mcpIds, progressId);
+                setAssistantId(assistantIdFinal);
+            } else {
+                setAssistantId(assistantIdFinal);
+                updateAssistantBubbleContent(assistantIdFinal, event.message, true);
+            }
+
+            // 将进度详情集成到工具调用区域（放在最终 response 之后，保证时间线已完整）
+            integrateProgressToMCPSection(progressId, assistantIdFinal);
+            responseStreamStateByProgressId.delete(progressId);
+
             setTimeout(() => {
-                collapseAllProgressDetails(assistantId, progressId);
+                collapseAllProgressDetails(assistantIdFinal, progressId);
             }, 3000);
-            
-            // 延迟刷新对话列表，确保助手消息已保存，updated_at已更新
+
             setTimeout(() => {
                 loadConversations();
             }, 200);
@@ -802,6 +1084,16 @@ function handleStreamEvent(event, progressElement, progressId,
             break;
             
         case 'done':
+            // 清理流式输出状态
+            responseStreamStateByProgressId.delete(progressId);
+            thinkingStreamStateByProgressId.delete(progressId);
+            // 清理工具流式输出占位
+            const prefix = String(progressId) + '::';
+            for (const key of Array.from(toolResultStreamStateByKey.keys())) {
+                if (String(key).startsWith(prefix)) {
+                    toolResultStreamStateByKey.delete(key);
+                }
+            }
             // 完成，更新进度标题（如果进度消息还存在）
             const doneTitle = document.querySelector(`#${progressId} .progress-title`);
             if (doneTitle) {
