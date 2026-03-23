@@ -9646,6 +9646,31 @@ header {
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
 }
+.webshell-ai-msg.assistant.webshell-ai-msg-error {
+    max-width: 72%;
+    border-color: rgba(220, 53, 69, 0.35);
+    background: rgba(220, 53, 69, 0.06);
+}
+.webshell-ai-error-head {
+    color: var(--error-color);
+    font-weight: 600;
+    line-height: 1.45;
+}
+.webshell-ai-error-detail {
+    margin-top: 6px;
+    font-size: 0.82rem;
+}
+.webshell-ai-error-detail summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+}
+.webshell-ai-error-detail pre {
+    margin-top: 6px;
+    max-height: 140px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
 /* AI 助手 markdown 渲染优化：避免行间距离过大和内容横向溢出 */
 .webshell-ai-msg.assistant {
     /* markdown 里已经有块级元素，不需要再整体 pre-wrap，否则容易在块之间产生“空行”感 */
@@ -9755,6 +9780,152 @@ header {
     display: flex;
     align-items: center;
     justify-content: center;
+}
+
+/* WebShell 数据库管理 Tab */
+.webshell-pane-db {
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px;
+    overflow: hidden;
+    background: linear-gradient(180deg, rgba(2, 6, 23, 0.015) 0%, rgba(2, 6, 23, 0.03) 100%);
+    border-radius: 10px;
+}
+.webshell-db-toolbar {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(160px, 1fr));
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    border-radius: 12px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.96) 100%);
+    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+.webshell-db-toolbar label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.82);
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.webshell-db-toolbar label:focus-within {
+    border-color: rgba(0, 102, 255, 0.38);
+    box-shadow: 0 0 0 2px rgba(0, 102, 255, 0.12);
+    transform: translateY(-1px);
+}
+.webshell-db-toolbar label span {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+.webshell-db-toolbar .form-control {
+    height: 36px;
+    border-radius: 8px;
+    border: 1px solid rgba(15, 23, 42, 0.16);
+    background: #fff;
+    font-size: 0.9rem;
+    padding-left: 10px;
+    padding-right: 10px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+.webshell-db-toolbar .form-control:focus {
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 2px rgba(0, 102, 255, 0.1);
+    background: #fff;
+}
+#webshell-db-sqlite-row {
+    grid-column: 1 / -1;
+}
+.webshell-db-sql {
+    width: 100%;
+    min-height: 140px;
+    resize: vertical;
+    font-family: var(--font-mono, Menlo, Monaco, Consolas, "Courier New", monospace);
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+    line-height: 1.45;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+.webshell-db-sql:focus {
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 2px rgba(0, 102, 255, 0.12);
+}
+.webshell-db-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.webshell-db-actions .btn-primary,
+.webshell-db-actions .btn-ghost {
+    min-width: 96px;
+    height: 34px;
+    border-radius: 8px;
+}
+.webshell-db-output-wrap {
+    flex: 1;
+    min-height: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-primary);
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.webshell-db-output-title {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--text-secondary);
+    background: linear-gradient(180deg, rgba(2, 6, 23, 0.015) 0%, transparent 100%);
+}
+.webshell-db-output {
+    flex: 1;
+    margin: 0;
+    padding: 12px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--font-mono, Menlo, Monaco, Consolas, "Courier New", monospace);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: var(--text-primary);
+}
+.webshell-db-output.error {
+    color: var(--error-color);
+}
+.webshell-db-hint {
+    border-top: 1px solid var(--border-color);
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    padding: 8px 12px;
+    background: rgba(2, 6, 23, 0.02);
+}
+@media (max-width: 1280px) {
+    .webshell-db-toolbar {
+        grid-template-columns: repeat(3, minmax(140px, 1fr));
+    }
+}
+@media (max-width: 980px) {
+    .webshell-db-toolbar {
+        grid-template-columns: repeat(2, minmax(140px, 1fr));
+    }
+}
+@media (max-width: 700px) {
+    .webshell-db-toolbar {
+        grid-template-columns: 1fr;
+    }
 }
 
 /* 仪表盘页面样式（最佳实践布局 + 视觉增强） */

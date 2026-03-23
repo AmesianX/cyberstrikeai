@@ -23,6 +23,7 @@ let webshellClearInProgress = false;
 // AI 助手：按连接 ID 保存对话 ID，便于多轮对话
 let webshellAiConvMap = {};
 let webshellAiSending = false;
+let webshellDbConfigByConn = {};
 // 流式打字机效果：当前会话的 response 序号，用于中止过期的打字
 let webshellStreamingTypingId = 0;
 let webshellProbeStatusById = {};
@@ -89,6 +90,23 @@ function wsT(key) {
         'webshell.tabTerminal': '虚拟终端',
         'webshell.tabFileManager': '文件管理',
         'webshell.tabAiAssistant': 'AI 助手',
+        'webshell.tabDbManager': '数据库管理',
+        'webshell.dbType': '数据库类型',
+        'webshell.dbHost': '主机',
+        'webshell.dbPort': '端口',
+        'webshell.dbUsername': '用户名',
+        'webshell.dbPassword': '密码',
+        'webshell.dbName': '数据库名',
+        'webshell.dbSqlitePath': 'SQLite 文件路径',
+        'webshell.dbSqlPlaceholder': '输入 SQL，例如：SELECT version();',
+        'webshell.dbRunSql': '执行 SQL',
+        'webshell.dbTest': '测试连接',
+        'webshell.dbOutput': '执行输出',
+        'webshell.dbNoConn': '请先选择 WebShell 连接',
+        'webshell.dbSqlRequired': '请输入 SQL',
+        'webshell.dbRunning': '数据库命令执行中，请稍候',
+        'webshell.dbCliHint': '如果提示命令不存在，请先在目标主机安装对应客户端（mysql/psql/sqlite3/sqlcmd）',
+        'webshell.dbExecFailed': '数据库执行失败',
         'webshell.aiSystemReadyMessage': '系统已就绪。请输入您的测试需求，系统将自动执行相应的安全测试。',
         'webshell.aiPlaceholder': '例如：列出当前目录下的文件',
         'webshell.aiSend': '发送',
@@ -480,6 +498,187 @@ function escapeHtml(s) {
     return div.innerHTML;
 }
 
+function escapeSingleQuotedShellArg(value) {
+    var s = value == null ? '' : String(value);
+    return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+function safeConnIdForStorage(conn) {
+    if (!conn || !conn.id) return '';
+    return String(conn.id).replace(/[^\w.-]/g, '_');
+}
+
+function getWebshellDbConfig(conn) {
+    var key = 'webshell_db_cfg_' + safeConnIdForStorage(conn);
+    if (!key) return {
+        type: 'mysql', host: '127.0.0.1', port: '3306', username: 'root', password: '', database: '', sqlitePath: '/tmp/test.db', sql: 'SELECT 1;'
+    };
+    if (webshellDbConfigByConn[key]) return webshellDbConfigByConn[key];
+    var def = {
+        type: 'mysql',
+        host: '127.0.0.1',
+        port: '3306',
+        username: 'root',
+        password: '',
+        database: '',
+        sqlitePath: '/tmp/test.db',
+        sql: 'SELECT 1;'
+    };
+    try {
+        var raw = localStorage.getItem(key);
+        if (raw) {
+            var parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+                def = Object.assign(def, parsed);
+            }
+        }
+    } catch (e) {}
+    webshellDbConfigByConn[key] = def;
+    return def;
+}
+
+function saveWebshellDbConfig(conn, cfg) {
+    var key = 'webshell_db_cfg_' + safeConnIdForStorage(conn);
+    if (!key || !cfg) return;
+    webshellDbConfigByConn[key] = cfg;
+    try { localStorage.setItem(key, JSON.stringify(cfg)); } catch (e) {}
+}
+
+function webshellDbGetFieldValue(id) {
+    var el = document.getElementById(id);
+    return el && typeof el.value === 'string' ? el.value.trim() : '';
+}
+
+function webshellDbCollectConfig(conn) {
+    var cfg = {
+        type: webshellDbGetFieldValue('webshell-db-type') || 'mysql',
+        host: webshellDbGetFieldValue('webshell-db-host') || '127.0.0.1',
+        port: webshellDbGetFieldValue('webshell-db-port') || '',
+        username: webshellDbGetFieldValue('webshell-db-user') || '',
+        password: (document.getElementById('webshell-db-pass') || {}).value || '',
+        database: webshellDbGetFieldValue('webshell-db-name') || '',
+        sqlitePath: webshellDbGetFieldValue('webshell-db-sqlite-path') || '/tmp/test.db',
+        sql: (document.getElementById('webshell-db-sql') || {}).value || ''
+    };
+    saveWebshellDbConfig(conn, cfg);
+    return cfg;
+}
+
+function webshellDbUpdateFieldVisibility() {
+    var type = webshellDbGetFieldValue('webshell-db-type') || 'mysql';
+    var isSqlite = type === 'sqlite';
+    var blocks = document.querySelectorAll('.webshell-db-common-field');
+    blocks.forEach(function (el) { el.style.display = isSqlite ? 'none' : ''; });
+    var sqliteBlock = document.getElementById('webshell-db-sqlite-row');
+    if (sqliteBlock) sqliteBlock.style.display = isSqlite ? '' : 'none';
+    var portEl = document.getElementById('webshell-db-port');
+    if (portEl && !String(portEl.value || '').trim()) {
+        if (type === 'mysql') portEl.value = '3306';
+        else if (type === 'pgsql') portEl.value = '5432';
+        else if (type === 'mssql') portEl.value = '1433';
+    }
+}
+
+function webshellDbSetOutput(text, isError) {
+    var outputEl = document.getElementById('webshell-db-output');
+    if (!outputEl) return;
+    outputEl.textContent = text || '';
+    outputEl.classList.toggle('error', !!isError);
+}
+
+function buildWebshellDbCommand(cfg, isTestOnly) {
+    var type = cfg.type || 'mysql';
+    var sql = String(isTestOnly ? 'SELECT 1;' : (cfg.sql || '')).trim();
+    if (!sql) return { error: wsT('webshell.dbSqlRequired') || '请输入 SQL' };
+
+    var sqlB64 = btoa(unescape(encodeURIComponent(sql)));
+    var sqlB64Arg = escapeSingleQuotedShellArg(sqlB64);
+    var tmpFile = '/tmp/.csai_sql_$$.sql';
+    var decodeToFile = 'printf %s ' + sqlB64Arg + " | base64 -d > " + tmpFile;
+    var cleanup = '; rc=$?; rm -f ' + tmpFile + '; echo "__CSAI_DB_RC__:$rc"; exit $rc';
+    var command = '';
+
+    if (type === 'mysql') {
+        var host = escapeSingleQuotedShellArg(cfg.host || '127.0.0.1');
+        var port = escapeSingleQuotedShellArg(cfg.port || '3306');
+        var user = escapeSingleQuotedShellArg(cfg.username || 'root');
+        var pass = escapeSingleQuotedShellArg(cfg.password || '');
+        var db = cfg.database ? (' -D ' + escapeSingleQuotedShellArg(cfg.database)) : '';
+        command = decodeToFile + '; MYSQL_PWD=' + pass + ' mysql -h ' + host + ' -P ' + port + ' -u ' + user + db + ' --batch --raw < ' + tmpFile + cleanup;
+    } else if (type === 'pgsql') {
+        var pHost = escapeSingleQuotedShellArg(cfg.host || '127.0.0.1');
+        var pPort = escapeSingleQuotedShellArg(cfg.port || '5432');
+        var pUser = escapeSingleQuotedShellArg(cfg.username || 'postgres');
+        var pPass = escapeSingleQuotedShellArg(cfg.password || '');
+        var pDb = escapeSingleQuotedShellArg(cfg.database || 'postgres');
+        command = decodeToFile + '; PGPASSWORD=' + pPass + ' psql -h ' + pHost + ' -p ' + pPort + ' -U ' + pUser + ' -d ' + pDb + ' -f ' + tmpFile + cleanup;
+    } else if (type === 'sqlite') {
+        var sqlitePath = escapeSingleQuotedShellArg(cfg.sqlitePath || '/tmp/test.db');
+        command = decodeToFile + '; sqlite3 -header -column ' + sqlitePath + ' < ' + tmpFile + cleanup;
+    } else if (type === 'mssql') {
+        var sHost = cfg.host || '127.0.0.1';
+        var sPort = cfg.port || '1433';
+        var sUser = escapeSingleQuotedShellArg(cfg.username || 'sa');
+        var sPass = escapeSingleQuotedShellArg(cfg.password || '');
+        var sDb = escapeSingleQuotedShellArg(cfg.database || 'master');
+        var server = escapeSingleQuotedShellArg(sHost + ',' + sPort);
+        command = decodeToFile + '; sqlcmd -S ' + server + ' -U ' + sUser + ' -P ' + sPass + ' -d ' + sDb + ' -i ' + tmpFile + cleanup;
+    } else {
+        return { error: (wsT('webshell.dbExecFailed') || '数据库执行失败') + ': unsupported type ' + type };
+    }
+
+    return { command: command };
+}
+
+function parseWebshellDbExecOutput(rawOutput) {
+    var raw = String(rawOutput || '');
+    var rc = null;
+    var cleaned = raw.replace(/__CSAI_DB_RC__:(\d+)\s*$/m, function (_, code) {
+        rc = parseInt(code, 10);
+        return '';
+    }).trim();
+    return { rc: rc, output: cleaned };
+}
+
+function simplifyWebshellAiError(rawMessage) {
+    var msg = String(rawMessage || '').trim();
+    var lower = msg.toLowerCase();
+    if ((lower.indexOf('401') !== -1 || lower.indexOf('unauthorized') !== -1) &&
+        (lower.indexOf('api key') !== -1 || lower.indexOf('apikey') !== -1)) {
+        return '鉴权失败：API Key 未配置或无效（401）';
+    }
+    if (lower.indexOf('timeout') !== -1 || lower.indexOf('timed out') !== -1) {
+        return '请求超时，请稍后重试';
+    }
+    if (lower.indexOf('network') !== -1 || lower.indexOf('failed to fetch') !== -1) {
+        return '网络异常，请检查服务连通性';
+    }
+    return msg || '请求失败';
+}
+
+function renderWebshellAiErrorMessage(targetEl, rawMessage) {
+    if (!targetEl) return;
+    var full = String(rawMessage || '').trim();
+    var shortMsg = simplifyWebshellAiError(full);
+    targetEl.classList.add('webshell-ai-msg-error');
+    targetEl.innerHTML = '';
+    var head = document.createElement('div');
+    head.className = 'webshell-ai-error-head';
+    head.textContent = shortMsg;
+    targetEl.appendChild(head);
+    if (full && full !== shortMsg) {
+        var detail = document.createElement('details');
+        detail.className = 'webshell-ai-error-detail';
+        var summary = document.createElement('summary');
+        summary.textContent = '查看详细错误';
+        var pre = document.createElement('pre');
+        pre.textContent = full;
+        detail.appendChild(summary);
+        detail.appendChild(pre);
+        targetEl.appendChild(detail);
+    }
+}
+
 function formatWebshellAiConvDate(updatedAt) {
     if (!updatedAt) return '';
     var d = typeof updatedAt === 'string' ? new Date(updatedAt) : updatedAt;
@@ -698,6 +897,7 @@ function selectWebshell(id) {
         '<button type="button" class="webshell-tab active" data-tab="terminal">' + wsT('webshell.tabTerminal') + '</button>' +
         '<button type="button" class="webshell-tab" data-tab="file">' + wsT('webshell.tabFileManager') + '</button>' +
         '<button type="button" class="webshell-tab" data-tab="ai">' + (wsT('webshell.tabAiAssistant') || 'AI 助手') + '</button>' +
+        '<button type="button" class="webshell-tab" data-tab="db">' + (wsT('webshell.tabDbManager') || '数据库管理') + '</button>' +
         '</div>' +
         '<div id="webshell-pane-terminal" class="webshell-pane active">' +
         '<div class="webshell-terminal-toolbar">' +
@@ -753,6 +953,23 @@ function selectWebshell(id) {
         '<button type="button" class="btn-primary" id="webshell-ai-send">' + (wsT('webshell.aiSend') || '发送') + '</button>' +
         '</div>' +
         '</div>' +
+        '</div>' +
+        '<div id="webshell-pane-db" class="webshell-pane webshell-pane-db">' +
+        '<div class="webshell-db-toolbar">' +
+        '<label><span>' + (wsT('webshell.dbType') || '数据库类型') + '</span><select id="webshell-db-type" class="form-control"><option value="mysql">MySQL</option><option value="pgsql">PostgreSQL</option><option value="sqlite">SQLite</option><option value="mssql">SQL Server</option></select></label>' +
+        '<label class="webshell-db-common-field"><span>' + (wsT('webshell.dbHost') || '主机') + '</span><input id="webshell-db-host" class="form-control" type="text" value="127.0.0.1" /></label>' +
+        '<label class="webshell-db-common-field"><span>' + (wsT('webshell.dbPort') || '端口') + '</span><input id="webshell-db-port" class="form-control" type="text" /></label>' +
+        '<label class="webshell-db-common-field"><span>' + (wsT('webshell.dbUsername') || '用户名') + '</span><input id="webshell-db-user" class="form-control" type="text" /></label>' +
+        '<label class="webshell-db-common-field"><span>' + (wsT('webshell.dbPassword') || '密码') + '</span><input id="webshell-db-pass" class="form-control" type="password" /></label>' +
+        '<label class="webshell-db-common-field"><span>' + (wsT('webshell.dbName') || '数据库名') + '</span><input id="webshell-db-name" class="form-control" type="text" /></label>' +
+        '<label id="webshell-db-sqlite-row"><span>' + (wsT('webshell.dbSqlitePath') || 'SQLite 文件路径') + '</span><input id="webshell-db-sqlite-path" class="form-control" type="text" value="/tmp/test.db" /></label>' +
+        '</div>' +
+        '<textarea id="webshell-db-sql" class="webshell-db-sql form-control" rows="8" placeholder="' + (wsT('webshell.dbSqlPlaceholder') || '输入 SQL，例如：SELECT version();') + '"></textarea>' +
+        '<div class="webshell-db-actions">' +
+        '<button type="button" class="btn-ghost" id="webshell-db-test-btn">' + (wsT('webshell.dbTest') || '测试连接') + '</button>' +
+        '<button type="button" class="btn-primary" id="webshell-db-run-btn">' + (wsT('webshell.dbRunSql') || '执行 SQL') + '</button>' +
+        '</div>' +
+        '<div class="webshell-db-output-wrap"><div class="webshell-db-output-title">' + (wsT('webshell.dbOutput') || '执行输出') + '</div><pre id="webshell-db-output" class="webshell-db-output"></pre><div class="webshell-db-hint">' + (wsT('webshell.dbCliHint') || '如果提示命令不存在，请先在目标主机安装对应客户端（mysql/psql/sqlite3/sqlcmd）') + '</div></div>' +
         '</div>';
 
     // Tab 切换
@@ -847,6 +1064,84 @@ function selectWebshell(id) {
             });
         });
     }
+
+    // 数据库管理：通过 WebShell 执行数据库客户端命令
+    var dbTypeEl = document.getElementById('webshell-db-type');
+    var dbRunBtn = document.getElementById('webshell-db-run-btn');
+    var dbTestBtn = document.getElementById('webshell-db-test-btn');
+    var dbSqlEl = document.getElementById('webshell-db-sql');
+    var dbCfg = getWebshellDbConfig(conn);
+    if (dbTypeEl) dbTypeEl.value = dbCfg.type || 'mysql';
+    var dbHostEl = document.getElementById('webshell-db-host');
+    var dbPortEl = document.getElementById('webshell-db-port');
+    var dbUserEl = document.getElementById('webshell-db-user');
+    var dbPassEl = document.getElementById('webshell-db-pass');
+    var dbNameEl = document.getElementById('webshell-db-name');
+    var dbSqliteEl = document.getElementById('webshell-db-sqlite-path');
+    if (dbHostEl) dbHostEl.value = dbCfg.host || '127.0.0.1';
+    if (dbPortEl) dbPortEl.value = dbCfg.port || '';
+    if (dbUserEl) dbUserEl.value = dbCfg.username || '';
+    if (dbPassEl) dbPassEl.value = dbCfg.password || '';
+    if (dbNameEl) dbNameEl.value = dbCfg.database || '';
+    if (dbSqliteEl) dbSqliteEl.value = dbCfg.sqlitePath || '/tmp/test.db';
+    if (dbSqlEl) dbSqlEl.value = dbCfg.sql || 'SELECT 1;';
+    webshellDbUpdateFieldVisibility();
+
+    function runDbQuery(isTestOnly) {
+        if (!conn || !conn.id) {
+            webshellDbSetOutput(wsT('webshell.dbNoConn') || '请先选择 WebShell 连接', true);
+            return;
+        }
+        if (webshellRunning) {
+            webshellDbSetOutput(wsT('webshell.dbRunning') || '数据库命令执行中，请稍候', true);
+            return;
+        }
+        var cfg = webshellDbCollectConfig(conn);
+        var built = buildWebshellDbCommand(cfg, !!isTestOnly);
+        if (!built.command) {
+            webshellDbSetOutput(built.error || (wsT('webshell.dbExecFailed') || '数据库执行失败'), true);
+            return;
+        }
+        webshellDbSetOutput(wsT('webshell.running') || '执行中…', false);
+        webshellRunning = true;
+        if (dbRunBtn) dbRunBtn.disabled = true;
+        if (dbTestBtn) dbTestBtn.disabled = true;
+        execWebshellCommand(conn, built.command).then(function (out) {
+            var parsed = parseWebshellDbExecOutput(out);
+            var code = parsed.rc;
+            var content = parsed.output || '';
+            var success = (code === 0) || (code == null && content && !/error|failed|denied|unknown|not found|access/i.test(content));
+            if (isTestOnly) {
+                var maybeOne = /\b1\b/.test(content);
+                if (success && (maybeOne || content === '' || /^ok$/i.test(content))) {
+                    webshellDbSetOutput('连接测试通过');
+                } else {
+                    webshellDbSetOutput('连接测试失败' + (content ? (':\n' + content) : ''), true);
+                }
+                return;
+            }
+            if (!success) {
+                webshellDbSetOutput((wsT('webshell.dbExecFailed') || '数据库执行失败') + (content ? (':\n' + content) : ''), true);
+                return;
+            }
+            webshellDbSetOutput(content || '执行完成（无输出）');
+        }).catch(function (err) {
+            webshellDbSetOutput((wsT('webshell.dbExecFailed') || '数据库执行失败') + ': ' + (err && err.message ? err.message : String(err)), true);
+        }).finally(function () {
+            webshellRunning = false;
+            if (dbRunBtn) dbRunBtn.disabled = false;
+            if (dbTestBtn) dbTestBtn.disabled = false;
+        });
+    }
+
+    if (dbTypeEl) dbTypeEl.addEventListener('change', function () { webshellDbUpdateFieldVisibility(); webshellDbCollectConfig(conn); });
+    ['webshell-db-host', 'webshell-db-port', 'webshell-db-user', 'webshell-db-pass', 'webshell-db-name', 'webshell-db-sqlite-path'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('change', function () { webshellDbCollectConfig(conn); });
+    });
+    if (dbSqlEl) dbSqlEl.addEventListener('change', function () { webshellDbCollectConfig(conn); });
+    if (dbRunBtn) dbRunBtn.addEventListener('click', function () { runDbQuery(false); });
+    if (dbTestBtn) dbTestBtn.addEventListener('click', function () { runDbQuery(true); });
 
     initWebshellTerminal(conn);
 }
@@ -1013,7 +1308,7 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
         });
     }).then(function (response) {
         if (!response.ok) {
-            assistantDiv.textContent = '请求失败: ' + response.status;
+            renderWebshellAiErrorMessage(assistantDiv, '请求失败: HTTP ' + response.status);
             return;
         }
         return response.body.getReader();
@@ -1068,7 +1363,7 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
                         streamingTypingId += 1;
                         var errLabel = (typeof window.t === 'function') ? window.t('chat.error') : '错误';
                         appendTimelineItem('error', '❌ ' + errLabel, eventData.message, eventData.data);
-                        assistantDiv.textContent = errLabel + ': ' + eventData.message;
+                        renderWebshellAiErrorMessage(assistantDiv, errLabel + ': ' + eventData.message);
                     } else if (eventData.type === 'progress' && eventData.message) {
                         var progressMsg = (typeof window.translateProgressMessage === 'function')
                             ? window.translateProgressMessage(eventData.message)
@@ -1176,7 +1471,7 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
             return reader.read().then(processChunk);
         });
     }).catch(function (err) {
-        assistantDiv.textContent = '请求异常: ' + (err && err.message ? err.message : String(err));
+        renderWebshellAiErrorMessage(assistantDiv, '请求异常: ' + (err && err.message ? err.message : String(err)));
     }).then(function () {
         webshellAiSending = false;
         if (sendBtn) sendBtn.disabled = false;
@@ -2024,9 +2319,11 @@ function refreshWebshellUIOnLanguageChange() {
             var tabTerminal = workspace.querySelector('.webshell-tab[data-tab="terminal"]');
             var tabFile = workspace.querySelector('.webshell-tab[data-tab="file"]');
             var tabAi = workspace.querySelector('.webshell-tab[data-tab="ai"]');
+            var tabDb = workspace.querySelector('.webshell-tab[data-tab="db"]');
             if (tabTerminal) tabTerminal.textContent = wsT('webshell.tabTerminal');
             if (tabFile) tabFile.textContent = wsT('webshell.tabFileManager');
             if (tabAi) tabAi.textContent = wsT('webshell.tabAiAssistant') || 'AI 助手';
+            if (tabDb) tabDb.textContent = wsT('webshell.tabDbManager') || '数据库管理';
 
             var quickLabel = workspace.querySelector('.webshell-quick-label');
             if (quickLabel) quickLabel.textContent = (wsT('webshell.quickCommands') || '快捷命令') + ':';
@@ -2059,6 +2356,30 @@ function refreshWebshellUIOnLanguageChange() {
             if (aiInput) aiInput.placeholder = wsT('webshell.aiPlaceholder') || '例如：列出当前目录下的文件';
             var aiSendBtn = document.getElementById('webshell-ai-send');
             if (aiSendBtn) aiSendBtn.textContent = wsT('webshell.aiSend') || '发送';
+            var dbTypeLabel = document.querySelector('#webshell-db-type') ? document.querySelector('#webshell-db-type').closest('label') : null;
+            if (dbTypeLabel && dbTypeLabel.querySelector('span')) dbTypeLabel.querySelector('span').textContent = wsT('webshell.dbType') || '数据库类型';
+            var dbHostLabel = document.querySelector('#webshell-db-host') ? document.querySelector('#webshell-db-host').closest('label') : null;
+            if (dbHostLabel && dbHostLabel.querySelector('span')) dbHostLabel.querySelector('span').textContent = wsT('webshell.dbHost') || '主机';
+            var dbPortLabel = document.querySelector('#webshell-db-port') ? document.querySelector('#webshell-db-port').closest('label') : null;
+            if (dbPortLabel && dbPortLabel.querySelector('span')) dbPortLabel.querySelector('span').textContent = wsT('webshell.dbPort') || '端口';
+            var dbUserLabel = document.querySelector('#webshell-db-user') ? document.querySelector('#webshell-db-user').closest('label') : null;
+            if (dbUserLabel && dbUserLabel.querySelector('span')) dbUserLabel.querySelector('span').textContent = wsT('webshell.dbUsername') || '用户名';
+            var dbPassLabel = document.querySelector('#webshell-db-pass') ? document.querySelector('#webshell-db-pass').closest('label') : null;
+            if (dbPassLabel && dbPassLabel.querySelector('span')) dbPassLabel.querySelector('span').textContent = wsT('webshell.dbPassword') || '密码';
+            var dbNameLabel = document.querySelector('#webshell-db-name') ? document.querySelector('#webshell-db-name').closest('label') : null;
+            if (dbNameLabel && dbNameLabel.querySelector('span')) dbNameLabel.querySelector('span').textContent = wsT('webshell.dbName') || '数据库名';
+            var dbSqliteLabel = document.querySelector('#webshell-db-sqlite-path') ? document.querySelector('#webshell-db-sqlite-path').closest('label') : null;
+            if (dbSqliteLabel && dbSqliteLabel.querySelector('span')) dbSqliteLabel.querySelector('span').textContent = wsT('webshell.dbSqlitePath') || 'SQLite 文件路径';
+            var dbRunBtn = document.getElementById('webshell-db-run-btn');
+            if (dbRunBtn) dbRunBtn.textContent = wsT('webshell.dbRunSql') || '执行 SQL';
+            var dbTestBtn = document.getElementById('webshell-db-test-btn');
+            if (dbTestBtn) dbTestBtn.textContent = wsT('webshell.dbTest') || '测试连接';
+            var dbSql = document.getElementById('webshell-db-sql');
+            if (dbSql) dbSql.placeholder = wsT('webshell.dbSqlPlaceholder') || '输入 SQL，例如：SELECT version();';
+            var dbTitle = document.querySelector('.webshell-db-output-title');
+            if (dbTitle) dbTitle.textContent = wsT('webshell.dbOutput') || '执行输出';
+            var dbHint = document.querySelector('.webshell-db-hint');
+            if (dbHint) dbHint.textContent = wsT('webshell.dbCliHint') || '如果提示命令不存在，请先在目标主机安装对应客户端（mysql/psql/sqlite3/sqlcmd）';
 
             // 如果当前 AI 对话区只有系统就绪提示（没有用户消息），用当前语言重置这条提示
             var aiMessages = document.getElementById('webshell-ai-messages');
